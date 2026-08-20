@@ -1,0 +1,30 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+
+# Builds y cachés
+dist/
+.vite-cache-front/
+.cache/
+front/.codex-build/
+front/.qa-review-build/
+front/.qa-version-build/
+front/.vite-build-qa/
+
+# Logs locales
+*.log
+*.out.log
+*.err.log
+
+# Archivos generados por la aplicación
+backend/storage/
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
