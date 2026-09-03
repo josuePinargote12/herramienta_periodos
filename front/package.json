@@ -11,6 +11,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "axios": "^1.19.0",
+    "bootstrap-icons": "^1.13.1",
     "react": "latest",
     "react-dom": "latest",
     "react-router-dom": "^7.18.2",

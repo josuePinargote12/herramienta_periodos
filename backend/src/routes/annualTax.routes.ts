@@ -6,12 +6,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   closeAnnualTax,
+  accumulateAnnualTax,
   downloadAnnualForm101,
   getAnnualTax,
   payAnnualTax,
   presentAnnualTax
 } from '../controllers/annualTax.controller.js';
-import { requirePermission } from '../middleware/permission.middleware.js';
+import { requirePermission, requireAccountingRole } from '../middleware/permission.middleware.js';
+import { getAnnualDetail, exportAnnualDetailExcel, exportAnnualDetailPdf } from '../controllers/annualTaxDetail.controller.js';
 
 const router = Router();
 const uploadDir = path.resolve('storage/accounting');
@@ -21,6 +23,10 @@ const upload = multer({ dest: uploadDir, limits: { fileSize: 15 * 1024 * 1024 } 
 
 // Consulta la configuración, el estado y la base acumulada del año.
 router.get('/clients/:clientId/annual-tax/:fiscalYear', requirePermission('income_tax.configure'), getAnnualTax);
+router.get('/clients/:clientId/annual-tax-detail/:fiscalYear', requireAccountingRole(), getAnnualDetail);
+router.get('/clients/:clientId/annual-tax-detail/:fiscalYear/excel', requireAccountingRole(), exportAnnualDetailExcel);
+router.get('/clients/:clientId/annual-tax-detail/:fiscalYear/pdf', requireAccountingRole(), exportAnnualDetailPdf);
+router.post('/clients/:clientId/annual-tax/:fiscalYear/accumulate', requirePermission('income_tax.configure'), accumulateAnnualTax);
 
 // Congela el acumulado y calcula el impuesto anual.
 router.post('/clients/:clientId/annual-tax/:fiscalYear/close', requirePermission('income_tax.configure'), upload.single('form101'), closeAnnualTax);

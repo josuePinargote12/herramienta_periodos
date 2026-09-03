@@ -2,14 +2,14 @@ import crypto from 'node:crypto';
 import { pool } from '../config/database.js';
 import type { AppRole } from '../services/permission.service.js';
 
-export type ClientInput = { ruc: string; name: string; owner: string; email: string; phone: string; clientStatus?: string; taxRegime?: string; accounting?: string; frequency?: string };
+export type ClientInput = { ruc: string; idType?: string; name: string; owner: string; email: string; phone: string; clientStatus?: string; taxRegime?: string; taxpayerType?: string; accounting?: string; frequency?: string };
 
 const selectClient = `SELECT id, ruc_cedula AS ruc,
-  CASE WHEN CHAR_LENGTH(ruc_cedula) = 10 THEN 'cedula' ELSE 'ruc' END AS idType,
+  identification_type AS idType,
   business_name AS name, responsible AS owner,
   email, phone, CASE status WHEN 'Active' THEN 'Activo' ELSE 'Inactivo' END AS clientStatus,
   COALESCE((SELECT cp.frequency FROM configuraciones_periodos cp WHERE cp.client_id = clientes.id ORDER BY cp.fiscal_year DESC LIMIT 1), 'Mensual') AS frequency,
-  tax_regime AS taxRegime, CASE accounting_required WHEN 'Yes' THEN 'Sí' ELSE 'No' END AS accounting,
+  tax_regime AS taxRegime, taxpayer_type AS taxpayerType, CASE accounting_required WHEN 'Yes' THEN 'Sí' ELSE 'No' END AS accounting,
   disabled_at AS disabledAt, disabled_by AS disabledBy,
   COD_USUEMP AS userCode,
   (SELECT u.NOM_USUEMP FROM usuarios u WHERE u.COD_USUEMP = clientes.COD_USUEMP LIMIT 1) AS assignedUser,
@@ -41,17 +41,17 @@ export async function findById(id: string, userCode: number, role: AppRole = 'CO
 export async function create(data: ClientInput, userCode: number, role: AppRole, assignedUserCode?: number) {
   const id = crypto.randomUUID();
   await pool.execute(`INSERT INTO clientes
-    (id, ruc_cedula, business_name, responsible, email, phone, status, tax_regime, accounting_required, COD_USUEMP)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, data.ruc, data.name, data.owner, data.email, data.phone,
+    (id, ruc_cedula, identification_type, business_name, responsible, email, phone, status, tax_regime, taxpayer_type, accounting_required, COD_USUEMP)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, data.ruc, (data as any).idType || 'ruc', data.name, data.owner, data.email, data.phone,
       data.clientStatus === 'Inactivo' ? 'Inactive' : 'Active', data.taxRegime || 'General regime',
-      data.accounting === 'No' ? 'No' : 'Yes', role === 'ADMIN' && assignedUserCode ? assignedUserCode : userCode]);
+      data.taxpayerType || 'Sociedad', data.accounting === 'No' ? 'No' : 'Yes', role === 'ADMIN' && assignedUserCode ? assignedUserCode : userCode]);
   return findById(id, userCode, role);
 }
 
 export async function update(id: string, data: ClientInput, userCode: number, role: AppRole) {
   const s = scope(role, userCode);
-  await pool.execute(`UPDATE clientes SET ruc_cedula = ?, business_name = ?, responsible = ?, email = ?, phone = ?, status = ?, tax_regime = ?, accounting_required = ? WHERE id = ?${s.sql}`,
-    [data.ruc, data.name, data.owner, data.email, data.phone, data.clientStatus === 'Inactivo' ? 'Inactive' : 'Active', data.taxRegime || 'General regime', data.accounting === 'No' ? 'No' : 'Yes', id, ...s.params]);
+  await pool.execute(`UPDATE clientes SET ruc_cedula = ?, identification_type = ?, business_name = ?, responsible = ?, email = ?, phone = ?, status = ?, tax_regime = ?, taxpayer_type = ?, accounting_required = ? WHERE id = ?${s.sql}`,
+    [data.ruc, (data as any).idType || 'ruc', data.name, data.owner, data.email, data.phone, data.clientStatus === 'Inactivo' ? 'Inactive' : 'Active', data.taxRegime || 'General regime', data.taxpayerType || 'Sociedad', data.accounting === 'No' ? 'No' : 'Yes', id, ...s.params]);
   return findById(id, userCode, role);
 }
 

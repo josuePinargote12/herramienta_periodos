@@ -17,9 +17,22 @@ export async function getIncomeTax(req: Request, res: Response) {
   // Consulta la configuración anual y suma IVA/retenciones de las declaraciones del año.
   const clientId = String(req.params.id); const year = String(req.params.year);
   if (!await ownsClient(clientId, req.user!.codigo, req.user!.role)) return res.status(404).json({ ok: false, error: 'Cliente no encontrado' });
-  const [rows]: any = await pool.execute(`SELECT COALESCE(SUM(dm.iva_amount),0) AS iva, COALESCE(SUM(dm.retention_amount),0) AS retentions
-    FROM declaraciones_mensuales dm INNER JOIN accounting_periods p ON p.id = dm.period_id WHERE p.client_id = ? AND p.fiscal_year = ?`, [clientId, year]);
-  return res.json({ ok: true, data: { configuration: await incomeTax.find(clientId, year, req.user!.codigo, req.user!.role), base: rows[0] } });
+  const month = Number(req.query.month);
+  const monthFilter = Number.isInteger(month) && month >= 1 && month <= 12 ? ' AND p.fiscal_month <= ?' : '';
+  const params = [clientId, year, ...(monthFilter ? [month] : [])];
+  const [rows]: any = await pool.execute(`SELECT COALESCE(SUM(dm.iva_amount),0) AS iva, COALESCE(SUM(dm.retention_amount),0) AS retentions,
+    COALESCE(SUM(dm.iva_costs_amount),0) AS sales, COALESCE(SUM(dm.iva_values_amount),0) AS costs,
+    COALESCE(SUM(COALESCE(dm.utility_amount, dm.iva_costs_amount - dm.iva_values_amount)),0) AS utility
+    FROM declaraciones_mensuales dm INNER JOIN accounting_periods p ON p.id = dm.period_id WHERE p.client_id = ? AND p.fiscal_year = ?${monthFilter}`, params);
+  const [monthly]: any = await pool.execute(`SELECT p.fiscal_month AS month,
+      COALESCE(SUM(dm.iva_amount),0) AS iva,
+      COALESCE(SUM(dm.retention_amount),0) AS retentions,
+      COALESCE(SUM(dm.iva_costs_amount),0) AS sales, COALESCE(SUM(dm.iva_values_amount),0) AS costs,
+      COALESCE(SUM(COALESCE(dm.utility_amount, dm.iva_costs_amount - dm.iva_values_amount)),0) AS utility
+    FROM declaraciones_mensuales dm INNER JOIN accounting_periods p ON p.id = dm.period_id
+    WHERE p.client_id = ? AND p.fiscal_year = ?${monthFilter}
+    GROUP BY p.fiscal_month ORDER BY p.fiscal_month`, params);
+  return res.json({ ok: true, data: { configuration: await incomeTax.find(clientId, year, req.user!.codigo, req.user!.role), base: rows[0], monthly } });
 }
 
 export async function saveIncomeTax(req: Request, res: Response) {

@@ -12,6 +12,10 @@ export async function findByClientYear(clientId: string, fiscalYear: string, use
       a.income_tax_config_id AS incomeTaxConfigId,
       a.fiscal_year AS fiscalYear,
       a.accumulated_base AS accumulatedBase,
+      a.iva_accumulated AS ivaAccumulated,
+      a.retentions_accumulated AS retentionsAccumulated,
+      a.accumulated_calculated_at AS accumulatedCalculatedAt,
+      a.accumulated_calculated_by AS accumulatedCalculatedBy,
       a.rate,
       a.calculated_tax AS calculatedTax,
       a.status,
@@ -45,23 +49,47 @@ export async function findById(declarationId: string, userCode: number) {
 
 // Calcula la base acumulada en tiempo real desde las declaraciones mensuales.
 // Este valor no reemplaza la base congelada que se guarda al cerrar el año.
-export async function getAccumulatedBase(clientId: string, fiscalYear: string, userCode: number) {
+export async function getAccumulatedBase(clientId: string, fiscalYear: string, userCode: number, maxMonth?: number) {
+  const monthFilter = Number.isInteger(maxMonth) && Number(maxMonth) >= 1 && Number(maxMonth) <= 12 ? ' AND p.fiscal_month <= ?' : '';
+  const params = [clientId, fiscalYear, userCode, ...(monthFilter ? [Number(maxMonth)] : [])];
   const [rows]: any = await pool.execute(`
     SELECT COALESCE(SUM(dm.iva_amount), 0) AS iva,
       COALESCE(SUM(dm.retention_amount), 0) AS retentions,
-      COALESCE(SUM(dm.iva_amount + dm.retention_amount), 0) AS accumulatedBase
+      COALESCE(SUM(dm.iva_costs_amount), 0) AS sales,
+      COALESCE(SUM(dm.iva_values_amount), 0) AS costs,
+      COALESCE(SUM(COALESCE(dm.utility_amount, dm.iva_costs_amount - dm.iva_values_amount)), 0) AS utility
     FROM declaraciones_mensuales dm
     INNER JOIN accounting_periods p ON p.id = dm.period_id
     INNER JOIN clientes c ON c.id = p.client_id
     WHERE p.client_id = ?
       AND p.fiscal_year = ?
-      AND c.COD_USUEMP = ?`, [clientId, fiscalYear, userCode]);
+      AND c.COD_USUEMP = ?${monthFilter}`, params);
   const row = rows[0] || {};
   return {
     iva: Number(row.iva || 0),
     retentions: Number(row.retentions || 0),
-    total: Number(row.accumulatedBase || 0)
+    total: Number(row.utility || 0),
+    utility: Number(row.utility || 0),
+    sales: Number(row.sales || 0),
+    costs: Number(row.costs || 0)
   };
+}
+
+// Base exclusiva de un mes; no reemplaza el acumulado anual.
+export async function getMonthlyBase(clientId: string, fiscalYear: string, month: number, userCode: number) {
+  const [rows]: any = await pool.execute(`
+    SELECT COALESCE(SUM(dm.iva_amount), 0) AS iva,
+      COALESCE(SUM(dm.retention_amount), 0) AS retentions,
+      COALESCE(SUM(dm.iva_costs_amount), 0) AS sales,
+      COALESCE(SUM(dm.iva_values_amount), 0) AS costs,
+      COALESCE(SUM(COALESCE(dm.utility_amount, dm.iva_costs_amount - dm.iva_values_amount)), 0) AS utility
+    FROM declaraciones_mensuales dm
+    INNER JOIN accounting_periods p ON p.id = dm.period_id
+    INNER JOIN clientes c ON c.id = p.client_id
+    WHERE p.client_id = ? AND p.fiscal_year = ? AND p.fiscal_month = ? AND c.COD_USUEMP = ?`,
+    [clientId, fiscalYear, month, userCode]);
+  const row = rows[0] || {};
+  return { iva: Number(row.iva || 0), retentions: Number(row.retentions || 0), total: Number(row.utility || 0), utility: Number(row.utility || 0), sales: Number(row.sales || 0), costs: Number(row.costs || 0) };
 }
 
 // El documento anual se guarda asociado al primer periodo del año, porque
@@ -79,7 +107,7 @@ export async function findFirstPeriod(clientId: string, fiscalYear: string, user
 
 // Crea el registro anual en estado acumulando. La restricción UNIQUE
 // client_id + fiscal_year evita dos declaraciones para el mismo año.
-export async function create(clientId: string, fiscalYear: string, configId: string, rate: number, userCode: number) {
+export async function create(clientId: string, fiscalYear: string, configId: string | null, rate: number, userCode: number) {
   await pool.execute(`
     INSERT INTO declaraciones_anuales
       (client_id, income_tax_config_id, fiscal_year, rate, created_by)
@@ -109,6 +137,28 @@ export async function close(
     WHERE a.id = ? AND c.COD_USUEMP = ?
       AND a.status = 'acumulando'`,
     [accumulatedBase, calculatedTax, dueDate, declarationId, userCode]);
+  return Number(result.affectedRows || 0);
+}
+
+// Guarda el acumulado vigente del Módulo 5 en la declaración anual.
+export async function saveAccumulated(
+  declarationId: string,
+  iva: number,
+  retentions: number,
+  accumulatedBase: number,
+  userCode: number
+) {
+  const [result]: any = await pool.execute(`
+    UPDATE declaraciones_anuales a
+    INNER JOIN clientes c ON c.id = a.client_id
+    SET a.iva_accumulated = ?,
+        a.retentions_accumulated = ?,
+        a.accumulated_base = ?,
+        a.accumulated_calculated_at = CURRENT_TIMESTAMP,
+        a.accumulated_calculated_by = ?
+    WHERE a.id = ? AND c.COD_USUEMP = ?
+      AND a.status = 'acumulando'`,
+    [iva, retentions, accumulatedBase, userCode, declarationId, userCode]);
   return Number(result.affectedRows || 0);
 }
 

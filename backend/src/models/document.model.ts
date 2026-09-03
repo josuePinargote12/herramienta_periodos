@@ -9,12 +9,17 @@ function owner(role: AppRole, userId: number, alias = 'c') {
 }
 
 export async function create(periodId: string, group: string, type: string, file: { originalname: string; filename: string; path: string; mimetype: string; size: number }, userId: number) {
-  const [versions]: any = await pool.execute(`SELECT COALESCE(MAX(version), 0) + 1 AS nextVersion FROM documentos_contables WHERE period_id = ? AND document_group = ? AND document_type = ?`, [periodId, group, type]);
+  const normalizedType = group === 'Portfolio'
+    ? (['CXC', 'receivable'].includes(type) ? 'CXC' : ['CXP', 'payable'].includes(type) ? 'CXP' : type)
+    : type;
+  const versionTypes = normalizedType === 'CXC' ? ['CXC', 'receivable'] : normalizedType === 'CXP' ? ['CXP', 'payable'] : [normalizedType];
+  const placeholders = versionTypes.map(() => '?').join(',');
+  const [versions]: any = await pool.execute(`SELECT COALESCE(MAX(version), 0) + 1 AS nextVersion FROM documentos_contables WHERE period_id = ? AND document_group = ? AND document_type IN (${placeholders})`, [periodId, group, ...versionTypes]);
   const version = Number(versions[0].nextVersion);
-  const [result]: any = await pool.execute(`INSERT INTO documentos_contables (period_id, document_group, document_type, version, original_name, stored_name, file_path, mime_type, file_size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [periodId, group, type, version, file.originalname, file.filename, file.path, file.mimetype, file.size, userId]);
+  const [result]: any = await pool.execute(`INSERT INTO documentos_contables (period_id, document_group, document_type, version, original_name, stored_name, file_path, mime_type, file_size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [periodId, group, normalizedType, version, file.originalname, file.filename, file.path, file.mimetype, file.size, userId]);
   const [periodRows]: any = await pool.execute('SELECT client_id AS clientId FROM accounting_periods WHERE id = ? LIMIT 1', [periodId]);
-  await auditModel.record({ clientId: periodRows[0]?.clientId, periodId, documentId: result.insertId, action: 'document.uploaded', details: { group, type, version, name: file.originalname }, userId });
-  return { id: result.insertId, version, type, name: file.originalname };
+  await auditModel.record({ clientId: periodRows[0]?.clientId, periodId, documentId: result.insertId, action: 'document.uploaded', details: { group, type: normalizedType, version, name: file.originalname }, userId });
+  return { id: result.insertId, version, type: normalizedType, name: file.originalname };
 }
 
 export async function ownsPeriod(periodId: string, userId: number, role: AppRole) {
@@ -27,7 +32,7 @@ export async function findByPeriod(periodId: string, userId: number, role: AppRo
   const s = owner(role, userId);
   const [rows]: any = await pool.execute(`SELECT d.id, d.document_group AS documentGroup,
     d.document_type AS documentType, d.version, d.original_name AS originalName,
-    d.file_size AS fileSize, d.uploaded_at AS uploadedAt,
+    d.file_size AS fileSize, d.file_path AS filePath, d.mime_type AS mimeType, d.uploaded_at AS uploadedAt,
     d.uploaded_by AS uploadedBy, d.delivery_status AS deliveryStatus
     FROM documentos_contables d
     INNER JOIN accounting_periods p ON p.id = d.period_id

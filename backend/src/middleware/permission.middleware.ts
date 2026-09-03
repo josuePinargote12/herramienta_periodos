@@ -8,6 +8,16 @@ export function requireRole(role: AppRole) {
   };
 }
 
+// El detalle anual es una vista interna exclusiva de administradores y contadores.
+export function requireAccountingRole() {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!['ADMIN', 'CONTADOR'].includes(String(req.user?.role))) {
+      return res.status(403).json({ ok: false, error: 'Solo ADMIN y CONTADOR pueden consultar el detalle anual' });
+    }
+    return next();
+  };
+}
+
 // Protege un endpoint con un permiso almacenado en permisos_contamatic.
 export function requirePermission(permission: string) {
   return async (req: Request, res: Response, next: NextFunction) => {

@@ -17,6 +17,8 @@ import dashboardRoutes from './routes/dashboard.routes.js';
 // Rutas del cierre anual del Impuesto a la Renta.
 import annualTaxRoutes from './routes/annualTax.routes.js';
 import auditRoutes from './routes/audit.routes.js';
+import portfolioRoutes from './routes/portfolio.routes.js';
+import { downloadCombinedPdf } from './controllers/combinedShare.controller.js';
 
 // Instancia de Express que recibe y dirige las peticiones HTTP.
 const app = express();
@@ -24,7 +26,8 @@ const app = express();
 app.disable('x-powered-by');
 app.use(helmet({ contentSecurityPolicy: false }));
 // Permite obtener la IP real cuando el backend está detrás de nginx.
-app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
+// Ngrok agrega X-Forwarded-For incluso durante las pruebas locales.
+app.set('trust proxy', 1);
 // CORS permite al frontend autorizado comunicarse con este backend y enviar cookies.
 app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173', credentials: true }));
 // Permite interpretar cuerpos JSON enviados por el frontend.
@@ -49,6 +52,7 @@ app.get('/api/health/database', async (_req: Request, res: Response) => {
     res.status(503).json({ ok: false, database: 'disconnected', error: 'Servicio temporalmente no disponible' });
   }
 });
+app.get('/api/public/share-pdf', downloadCombinedPdf);
 // Monta las rutas SSO bajo el prefijo /api/sso.
 app.use('/api/sso', ssoRoutes);
 // Monta el login bajo el prefijo /api/auth.
@@ -58,6 +62,7 @@ app.use('/api/clients', requireAuth, clientRoutes);
 app.use('/api/periods', requireAuth, periodRoutes);
 app.use('/api/dashboard', requireAuth, dashboardRoutes);
 app.use('/api/audit', requireAuth, auditRoutes);
+app.use('/api', requireAuth, portfolioRoutes);
 // Rutas privadas del impuesto anual: el router contiene /clients/... y /annual-tax/....
 app.use('/api', requireAuth, annualTaxRoutes);
 

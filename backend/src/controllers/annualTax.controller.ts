@@ -18,15 +18,36 @@ function fiscalYearFromRequest(req: Request) {
 // Devuelve configuración, declaración anual y base acumulada en vivo.
 export async function getAnnualTax(req: Request, res: Response) {
   try {
+    const month = req.query.month ? Number(req.query.month) : undefined;
     const data = await annualTaxService.getAnnualSummary(
       String(req.params.clientId),
       fiscalYearFromRequest(req),
-      req.user!.codigo
+      req.user!.codigo,
+      month,
+      month !== undefined && Number.isInteger(month) && month >= 1 && month <= 12
     );
     return res.json({ ok: true, data });
   } catch (error: any) {
     return res.status(error?.message === 'Cliente no encontrado' ? 404 : 400)
       .json({ ok: false, error: error?.message || 'No se pudo consultar el impuesto anual' });
+  }
+}
+
+// POST /clients/:clientId/annual-tax/:fiscalYear/accumulate
+// Guarda el IVA, retenciones y total acumulado del Módulo 5.
+export async function accumulateAnnualTax(req: Request, res: Response) {
+  try {
+    const month = req.body?.month ? Number(req.body.month) : undefined;
+    const data = await annualTaxService.accumulateAnnualBase(
+      String(req.params.clientId),
+      fiscalYearFromRequest(req),
+      req.user!.codigo,
+      month
+    );
+    return res.json({ ok: true, data });
+  } catch (error: any) {
+    return res.status(error?.message === 'Cliente no encontrado' ? 404 : 400)
+      .json({ ok: false, error: error?.message || 'No se pudo calcular el acumulado anual' });
   }
 }
 
