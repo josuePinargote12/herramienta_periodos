@@ -23,10 +23,7 @@ function validRuc(value: string) {
     return Number(value[8]) === (11 - (sum % 11)) % 11;
   }
   if (type === 9) {
-    if (!value.endsWith('001')) return false;
-    const sum = [4, 3, 2, 7, 6, 5, 4, 3, 2].reduce((total, weight, index) => total + Number(value[index]) * weight, 0);
-    const check = 11 - (sum % 11);
-    return Number(value[9]) === (check === 10 || check === 11 ? 0 : check);
+    return value.endsWith('001');
   }
   return type <= 5 && validCedula(value.slice(0, 10)) && value.endsWith('001');
 }
@@ -49,18 +46,16 @@ function validateClient(body: any) {
 }
 
 async function findDuplicateField(body: any, userCode: number, role: string, excludeId?: string) {
-  const values = [String(body.ruc || '').trim(), String(body.email || '').trim().toLowerCase(), String(body.phone || '').trim()];
+  const ruc = String(body.ruc || '').trim();
   const ownerFilter = role === 'ADMIN' ? '' : ' AND COD_USUEMP = ?';
   const excludeFilter = excludeId ? ' AND id <> ?' : '';
-  const params: any[] = [...values];
+  const params: any[] = [ruc];
   if (role !== 'ADMIN') params.push(userCode);
   if (excludeId) params.push(excludeId);
-  const [rows]: any = await pool.execute(`SELECT ruc_cedula, email, phone FROM clientes WHERE (ruc_cedula = ? OR LOWER(email) = ? OR phone = ?)${ownerFilter}${excludeFilter} LIMIT 1`, params);
+  const [rows]: any = await pool.execute(`SELECT ruc_cedula FROM clientes WHERE ruc_cedula = ?${ownerFilter}${excludeFilter} LIMIT 1`, params);
   const row = rows[0];
   if (!row) return '';
-  if (String(row.ruc_cedula) === values[0]) return 'El RUC o número de identificación ya está registrado';
-  if (String(row.email).toLowerCase() === values[1]) return 'El correo electrónico ya está registrado';
-  return 'El número de teléfono ya está registrado';
+  return 'El RUC o número de identificación ya está registrado';
 }
 
 export const listClients = async (req: Request, res: Response) => {
@@ -89,14 +84,13 @@ export const createClient = async (req: Request, res: Response) => {
   if (!body.name || !body.ruc || !body.owner || !body.email || !body.phone) {
     return res.status(400).json({ ok: false, error: 'Los datos obligatorios del cliente están incompletos' });
   }
-  const identificationType = body.idType === 'cedula' ? 'cedula' : 'ruc';
-  const identification = body.idType === 'passport' || (body.idType === 'ruc' && String(body.ruc).endsWith('0001')) ? '0000000000001' : String(body.ruc);
-  if (false && identificationType === 'cedula' && !/^\d{10}$/.test(identification)) {
+  /* if (false && identificationType === 'cedula' && !/^\d{10}$/.test(identification)) {
     return res.status(400).json({ ok: false, error: 'La cédula debe tener 10 dígitos' });
   }
   if (false && identificationType === 'ruc' && !/^\d{10}001$/.test(identification)) {
     return res.status(400).json({ ok: false, error: 'El RUC debe tener 13 dígitos y terminar en 001' });
   }
+  */
   try {
     const assignedUserCode = Number(body.assignedUserCode);
     if (req.user!.role === 'ADMIN' && (!Number.isInteger(assignedUserCode) || assignedUserCode <= 0)) {

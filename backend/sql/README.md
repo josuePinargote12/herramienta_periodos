@@ -20,6 +20,7 @@ Ejecutar las migraciones en este orden sobre una base nueva:
 16. `015_add_optional_portfolio_review.sql`
 17. `016_add_employee_expense.sql`
 18. `017_add_income_tax_retention.sql`
+19. `019_create_financial_statement_summary.sql`
 
 Los archivos de `legacy/` son copias de esquemas anteriores y no deben
 ejecutarse en instalaciones nuevas. Se conservan únicamente como referencia

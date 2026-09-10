@@ -22,13 +22,13 @@ export async function getIncomeTax(req: Request, res: Response) {
   const params = [clientId, year, ...(monthFilter ? [month] : [])];
   const [rows]: any = await pool.execute(`SELECT COALESCE(SUM(dm.iva_amount),0) AS iva, COALESCE(SUM(dm.retention_amount),0) AS retentions,
     COALESCE(SUM(dm.iva_costs_amount),0) AS sales, COALESCE(SUM(dm.iva_values_amount),0) AS costs,
-    COALESCE(SUM(COALESCE(dm.utility_amount, dm.iva_costs_amount - dm.iva_values_amount)),0) AS utility
+    COALESCE(SUM(dm.iva_costs_amount - dm.iva_values_amount - COALESCE(dm.employee_expense_amount, 0)),0) AS utility
     FROM declaraciones_mensuales dm INNER JOIN accounting_periods p ON p.id = dm.period_id WHERE p.client_id = ? AND p.fiscal_year = ?${monthFilter}`, params);
   const [monthly]: any = await pool.execute(`SELECT p.fiscal_month AS month,
       COALESCE(SUM(dm.iva_amount),0) AS iva,
       COALESCE(SUM(dm.retention_amount),0) AS retentions,
       COALESCE(SUM(dm.iva_costs_amount),0) AS sales, COALESCE(SUM(dm.iva_values_amount),0) AS costs,
-      COALESCE(SUM(COALESCE(dm.utility_amount, dm.iva_costs_amount - dm.iva_values_amount)),0) AS utility
+      COALESCE(SUM(dm.iva_costs_amount - dm.iva_values_amount - COALESCE(dm.employee_expense_amount, 0)),0) AS utility
     FROM declaraciones_mensuales dm INNER JOIN accounting_periods p ON p.id = dm.period_id
     WHERE p.client_id = ? AND p.fiscal_year = ?${monthFilter}
     GROUP BY p.fiscal_month ORDER BY p.fiscal_month`, params);

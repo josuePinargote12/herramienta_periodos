@@ -18,8 +18,6 @@ async function openProtectedDocument(periodId, documentId) {
 }
 
 // Compatibilidad con la vista histórica de declaraciones.
-const openPdf = openProtectedDocument;
-
 const CLIENTS_ONLY_MODE = true;
 const WORKFLOW_STEPS = [
   ['estados', 'Estados financieros'], ['cxc', 'CxC / CxP'], ['declaraciones', 'Declaraciones mensuales'],
@@ -42,8 +40,11 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
   const [existingDeclaration, setExistingDeclaration] = useState(null);
   const [parsedIvaDeclaration, setParsedIvaDeclaration] = useState(null);
   const [parsedRetentionDeclaration, setParsedRetentionDeclaration] = useState(null);
+  const [financialPreviews, setFinancialPreviews] = useState({});
+  const [financialManual, setFinancialManual] = useState({});
   const [activePeriodId, setActivePeriodId] = useState(null);
   const [portfolioPreview, setPortfolioPreview] = useState({});
+  const [portfolioManual, setPortfolioManual] = useState({});
   const [taxPreview, setTaxPreview] = useState(null);
   const [userHasChanges, setUserHasChanges] = useState(false);
   const completed = workflow?.completed ?? localCompleted;
@@ -202,6 +203,21 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
   }, [client?.id, selectedYear, selectedMonth, active]);
   const complete = async () => {
     if (process.has(active) && !ready) return;
+    // La validación de datos extraídos queda archivada: el informe incorpora los documentos originales.
+    if (false && active === 'estados') {
+      const manualFields = {
+        balance: ['total_activos', 'total_pasivos', 'patrimonio'],
+        results: ['ingresos_periodo', 'costos_gastos_operativos', 'utilidad_antes_participacion_impuestos']
+      };
+      for (const [type, fields] of Object.entries(manualFields)) {
+        if (!files[type] || !financialPreviews[type]?.error) continue;
+        const missing = fields.some(field => financialManual[type]?.[field] == null || !Number.isFinite(Number(financialManual[type][field])));
+        if (missing) {
+          alert('Completa todos los datos manuales del documento antes de continuar. Si el valor es cero, ingresa 0.');
+          return;
+        }
+      }
+    }
     const hasNewFiles = hasChanges;
     // Si el paso ya tiene todos sus documentos guardados y no se seleccionó
     // ningún archivo nuevo, solo se continúa sin crear otra versión.
@@ -218,13 +234,13 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
       return;
     }
     if (completed.has(active)) {
-      if (process.has(active) && onPersistStep && !(await onPersistStep(active, files, selectedYear, selectedMonth))) return;
+      if (process.has(active) && onPersistStep && !(await onPersistStep(active, files, selectedYear, selectedMonth, financialManual, portfolioManual))) return;
       setActive(current[0]);
       setFiles({});
       return;
     }
     if (active === 'mes' && onPersistSelection && !(await onPersistSelection(selectedYear, selectedMonth))) return;
-    if (onPersistStep && process.has(active) && !(await onPersistStep(active, files, selectedYear, selectedMonth))) return;
+    if (onPersistStep && process.has(active) && !(await onPersistStep(active, files, selectedYear, selectedMonth, financialManual, portfolioManual))) return;
     setCompleted(value => new Set([...value, active]));
     const next = WORKFLOW_STEPS[activeIndex + 1];
     if (next) setActive(next[0]);
@@ -240,6 +256,19 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
     setFiles(value => ({ ...value, [key]: file }));
     setUserHasChanges(true);
     if (!file || !workflow) return;
+    if (false && active === 'estados' && (key === 'balance' || key === 'results')) {
+      const formData = new FormData(); formData.append('file', file);
+      try { const { data } = await api.post(`/periods/financial-statements/parse?type=${key}`, formData); const parsed = data.data || {}; const recognized = Object.values(parsed).some(value => value != null); setFinancialPreviews(value => ({ ...value, [key]: recognized ? parsed : { error: 'No se reconocieron datos en este formato.' } })); }
+      catch (error) { setFinancialPreviews(value => ({ ...value, [key]: { error: error?.response?.data?.error || 'No se pudo leer el archivo.' } })); }
+      return;
+    }
+    if (false && active === 'cxc' && (key === 'receivable' || key === 'payable')) {
+      if (!activePeriodId) return;
+      const formData = new FormData(); formData.append('file', file);
+      try { const { data } = await api.post(`/periods/${activePeriodId}/portfolio/preview`, formData); setPortfolioPreview(value => ({ ...value, [key]: data.data?.totals || {} })); }
+      catch (error) { setPortfolioPreview(value => ({ ...value, [key]: { error: error?.response?.data?.error || 'No se pudo leer el archivo.' } })); }
+      return;
+    }
     if (key === 'retentions' && workflow.setRetentionValue) {
       const formData = new FormData();
       formData.append('file', file);
@@ -271,8 +300,8 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
       : active === 'declaraciones' ? [['iva', 'PDF de IVA'], ['retentions', 'PDF de retenciones']]
       : [];
   useEffect(() => {
-    if (active !== 'cxc') return;
-    document.querySelectorAll('.workflow-upload-grid input[type="file"]').forEach(input => { input.accept = '.pdf,.xlsx,.xls,application/pdf'; });
+    if (active !== 'cxc' && active !== 'estados') return;
+    document.querySelectorAll('.workflow-upload-grid input[type="file"]').forEach(input => { input.accept = '.pdf,.xlsx,.xls,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'; });
   }, [active]);
   useEffect(() => {
     if (active !== 'cxc' || !activePeriodId) return;
@@ -321,6 +350,39 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
     });
   }, [active, portfolioPreview]);
   useEffect(() => {
+    if (active !== 'cxc') return;
+    const fields = document.querySelectorAll('.workflow-upload-grid > label');
+    ['receivable', 'payable'].forEach((key, index) => {
+      const value = portfolioPreview[key];
+      if (!value?.error || !fields[index]) return;
+      const box = fields[index].querySelector('.portfolio-read-results');
+      if (!box) return;
+      box.innerHTML = `<span>${value.error}</span><label class="portfolio-manual-field">Total<input type="number" step="0.01" data-portfolio-key="totalAmount" value="${portfolioManual[key]?.totalAmount ?? ''}" placeholder="Ingresar manualmente" /></label><label class="portfolio-manual-field">Saldo pendiente<input type="number" step="0.01" data-portfolio-key="pendingAmount" value="${portfolioManual[key]?.pendingAmount ?? ''}" placeholder="Ingresar manualmente" /></label>`;
+      box.querySelectorAll('input[data-portfolio-key]').forEach(input => input.addEventListener('input', event => setPortfolioManual(current => ({ ...current, [key]: { ...(current[key] || {}), [event.target.dataset.portfolioKey]: event.target.value === '' ? null : Number(event.target.value) } }))));
+    });
+  }, [active, portfolioPreview, portfolioManual]);
+  useEffect(() => {
+    if (active !== 'estados') return undefined;
+    const keys = ['balance', 'results', 'equity', 'cashflow', 'notes'];
+    const visibleFields = {
+      balance: ['total_activos', 'total_pasivos', 'patrimonio'],
+      results: ['ingresos_periodo', 'costos_gastos_operativos', 'utilidad_antes_participacion_impuestos']
+    };
+    const labels = { total_activos: 'Total Activos', total_pasivos: 'Total Pasivos', patrimonio: 'Patrimonio', ingresos_periodo: 'Ingresos', costos_gastos_operativos: 'Costos y Gastos Operativos', utilidad_antes_participacion_impuestos: 'Utilidad antes de participación e impuestos' };
+    const fields = document.querySelectorAll('.workflow-upload-grid > label');
+    fields.forEach((field, index) => {
+      const key = keys[index];
+      const preview = financialPreviews[key];
+      let box = field.querySelector('.financial-read-results');
+      if (!box) { box = document.createElement('div'); box.className = 'financial-read-results'; field.appendChild(box); }
+      box.innerHTML = preview?.error
+        ? `<span>${preview.error}</span>${(visibleFields[key] || []).map(name => `<label class="financial-manual-field">${labels[name]}<input type="number" step="0.01" data-financial-key="${name}" value="${financialManual[key]?.[name] ?? ''}" placeholder="Ingresar manualmente" /></label>`).join('')}`
+        : preview ? (visibleFields[key] || []).map(name => { const value = preview[name]; return `<span><small>${labels[name]}</small><strong>${value == null ? 'No encontrado' : `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}</strong></span>`; }).join('') : '';
+      box.querySelectorAll('input[data-financial-key]').forEach(input => input.addEventListener('input', event => setFinancialManual(value => ({ ...value, [key]: { ...(value[key] || {}), [event.target.dataset.financialKey]: event.target.value === '' ? null : Number(event.target.value) } }))));
+    });
+    return () => document.querySelectorAll('.financial-read-results').forEach(box => box.remove());
+  }, [active, financialPreviews]);
+  useEffect(() => {
     if (active !== 'declaraciones') return;
     const uploadFields = document.querySelectorAll('.workflow-upload-grid > label');
     if (uploadFields.length < 2) return;
@@ -365,6 +427,14 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
     const entries = !groups.length && Array.isArray(storedRows) ? storedRows.filter(item => Number(item.value) > 0).map(item => ({ label: item.label || names[item.code] || 'Casillero del formulario', fields: [{ code: item.code, value: item.value }] })) : [];
     const formatRow = item => `<tr><td><b>${item.code}</b> · ${item.label || names[item.code] || 'Casillero del formulario'}</td><td>${money(item.value)}</td></tr>`;
     const visibleGroups = (groups.length ? groups : entries).filter(group => group.fields.some(field => Number(field.value) > 0) && !/factor de proporcionalidad/i.test(group.label));
+    const hasSalesTotal = visibleGroups.some(group => group.fields.some(field => String(field.code) === '419'));
+    const salesTotal = Number(declaration?.ivaCosts ?? declaration?.costs);
+    // Compatibilidad con declaraciones guardadas antes de corregir el parser:
+    // si el PDF ya tenía el valor 419 pero no se almacenó su fila, la mostramos
+    // usando el valor de iva_costs_amount guardado en la declaración.
+    if (!hasSalesTotal && Number.isFinite(salesTotal) && salesTotal > 0) {
+      visibleGroups.push({ label: 'TOTAL VENTAS Y OTRAS OPERACIONES', fields: [{ code: '409', value: salesTotal }, { code: '419', value: salesTotal }] });
+    }
     const formatGroup = group => `<div class="iva-form-row ${/^(TOTAL VENTAS Y OTRAS OPERACIONES|TOTAL ADQUISICIONES Y PAGOS)$/i.test(group.label.trim()) ? 'iva-total-row' : ''}"><span class="iva-form-label">${group.label}</span>${group.fields.filter(field => Number(field.value) > 0).map(field => { const key = ['419', '519'].includes(String(field.code)); return `<span class="iva-form-code ${key ? 'iva-key-code' : ''}">${field.code}</span><span class="iva-form-value ${key ? 'iva-key-value' : ''}">${money(field.value)}</span>`; }).join('')}</div>`;
     const sales = visibleGroups.filter(group => Number(group.fields[0]?.code) >= 400 && Number(group.fields[0]?.code) < 480).map(formatGroup).join('');
     const expenseGroups = visibleGroups.filter(group => Number(group.fields[0]?.code) >= 500 && Number(group.fields[0]?.code) < 600);
@@ -440,7 +510,7 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
     modal.addEventListener('click', event => { if (event.target === modal || event.target.closest('.iva-detail-modal-close')) modal.remove(); });
     return () => { modal.remove(); box?.remove(); };
   }, [active, existingDeclaration, parsedRetentionDeclaration]);
-  const accept = active === 'cxc' ? '.pdf,.xlsx,.xls,application/pdf' : '.xlsx,.xls';
+  const accept = '.pdf,.xlsx,.xls,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
   const handleTimelineStepClick = stepIndex => {
     if (stepIndex === 1 && active === 'estados' && !completed.has('estados')) {
       setCompleted(value => new Set([...value, 'estados']));
@@ -457,8 +527,16 @@ function WorkflowTimeline({ client, year, compact = false, showAction = true, sh
   return <section className={`workflow-timeline panel ${compact ? 'compact' : ''}`}>
     {client && <div className="workflow-timeline-context"><div><p className="eyebrow">CLIENTE ACTIVO</p><strong>{client.name}</strong><span className="timeline-period-label">· {selectedYear} · {selectedMonth}</span><small>RUC / Cédula: {client.ruc}</small></div>{onClose && <button type="button" className="timeline-close-btn" onClick={onClose} aria-label="Volver a clientes"><Icon name="close" size={17}/></button>}</div>}
      {showTimeline && <div className="workflow-timeline-groups"><p className="workflow-timeline-group-label process-label">Proceso del periodo</p>{WORKFLOW_STEPS.map(([id, label], stepIndex) => <button ref={active === id ? activeStepRef : null} key={id} type="button" className={`workflow-timeline-step ${completed.has(id) ? 'completed' : ''} ${active === id ? 'current' : ''}`} disabled={stepIndex > lastAvailableIndex && stepIndex !== lastAvailableIndex + 1} onClick={() => handleTimelineStepClick(stepIndex)}><span className="workflow-timeline-dot">{completed.has(id) ? '✓' : stepIndex + 1}</span><span className="workflow-timeline-label">{label}</span></button>)}</div>}
-    {showAction && <div className="workflow-timeline-action"><p className="eyebrow">PASO ACTIVO</p><h4>{activeLabel}</h4>{active === 'anio' && <label>Año fiscal<select value={selectedYear} disabled={completed.has(active)} onChange={event => setSelectedYear(event.target.value)}><option>{year}</option><option>{Number(year) + 1}</option></select></label>}{active === 'mes' && <label>Mes<select value={selectedMonth} disabled={completed.has(active)} onChange={event => setSelectedMonth(event.target.value)}>{MONTHS.map(item => <option key={item.name}>{item.name}</option>)}</select></label>}{process.has(active) && <div className="workflow-upload-grid">{labels.map(([key, label]) => <label key={key}>{label}{existingDocuments[key] && <small className="workflow-saved-file">Guardado: {existingDocuments[key].originalName} · v{existingDocuments[key].version}.0</small>}<input type="file" accept={key === 'iva' || key === 'retentions' ? '.pdf,application/pdf' : '.xlsx,.xls'} onChange={event => setFile(key, event.target.files?.[0] || null)} />{files[key] && <small className="workflow-file-name">Nuevo: {files[key].name}</small>}</label>)}</div>}{active === 'declaraciones' && <div className="workflow-values-grid"><label>Valor IVA ($){existingDeclaration && <small className="workflow-saved-file">Guardado: ${existingDeclaration.iva}</small>}<input type="number" min="0" step="0.01" value={workflow?.ivaValue || existingDeclaration?.iva || ''} onChange={event => workflow?.setIvaValue?.(event.target.value)} /></label><label>Valor retenciones ($){existingDeclaration && <small className="workflow-saved-file">Guardado: ${existingDeclaration.retentions}</small>}<input type="number" min="0" step="0.01" value={workflow?.retentionValue || existingDeclaration?.retentions || ''} onChange={event => workflow?.setRetentionValue?.(event.target.value)} /></label></div>}<button type="button" className="primary" disabled={completed.has(active) && ['cliente','anio','mes'].includes(active) || (!completed.has(active) && (active !== current[0] || (process.has(active) && !ready)))} onClick={complete}>{completed.has(active) && ['cliente','anio','mes'].includes(active) ? 'Paso completado' : completed.has(active) && process.has(active) && Object.keys(files).length ? 'Guardar cambios' : completed.has(active) || (process.has(active) && ready && !Object.keys(files).length) ? 'Continuar' : process.has(active) ? 'Continuar' : `Completar ${activeLabel}`}</button></div>}
-  </section>;
+   {showAction && <div className="workflow-timeline-action">
+     <p className="eyebrow">PASO ACTIVO</p>
+     <h4>{activeLabel}</h4>
+     {active === 'anio' && <label>Año fiscal<select value={selectedYear} disabled={completed.has(active)} onChange={event => setSelectedYear(event.target.value)}><option>{year}</option><option>{Number(year) + 1}</option></select></label>}
+     {active === 'mes' && <label>Mes<select value={selectedMonth} disabled={completed.has(active)} onChange={event => setSelectedMonth(event.target.value)}>{MONTHS.map(item => <option key={item.name}>{item.name}</option>)}</select></label>}
+     {process.has(active) && <div className="workflow-upload-grid">{labels.map(([key, label]) => <label key={key}>{label}{existingDocuments[key] && <small className="workflow-saved-file">Guardado: {existingDocuments[key].originalName} · v{existingDocuments[key].version}.0</small>}<input type="file" accept={key === 'iva' || key === 'retentions' || key === 'results' ? '.pdf,.xlsx,.xls,application/pdf' : '.xlsx,.xls'} onChange={event => setFile(key, event.target.files?.[0] || null)} />{files[key] && <small className="workflow-file-name">Nuevo: {files[key].name}</small>}</label>)}</div>}
+     {active === 'declaraciones' && <div className="workflow-values-grid"><label>Valor IVA ($)<input type="number" min="0" step="0.01" value={workflow?.ivaValue || existingDeclaration?.iva || ''} onChange={event => workflow?.setIvaValue?.(event.target.value)} /></label><label>Valor retenciones ($)<input type="number" min="0" step="0.01" value={workflow?.retentionValue || existingDeclaration?.retentions || ''} onChange={event => workflow?.setRetentionValue?.(event.target.value)} /></label></div>}
+     <button key={hasChanges ? 'guardar-cambios' : active === 'completado' ? 'revisar-informacion' : 'continuar'} type="button" className="primary" onClick={complete}>{hasChanges ? 'Guardar cambios' : active === 'completado' ? 'Revisar información' : 'Continuar'}</button>
+   </div>}
+   </section>;
 }
 
 const ensureCsrfToken = async () => {
@@ -684,9 +762,6 @@ function Login({ onLogin }) {
     } finally {
       setLoading(false);
     }
-    /* legacy login removed
-    else setError('Ingresa tu contraseña para continuar.');
-    */
   };
   if (checkingLoginSession) return <main className="login-page"></main>;
 
@@ -747,6 +822,7 @@ function App() {
   const [workflowIvaValue, setWorkflowIvaValue] = useState('');
   const [workflowRetentionValue, setWorkflowRetentionValue] = useState('');
   const [workflowEmployeeExpense, setWorkflowEmployeeExpense] = useState('0');
+  const [workflowMessage, setWorkflowMessage] = useState('');
   const [disabledClients, setDisabledClients] = useState([]);
   const [assignableUsers, setAssignableUsers] = useState([]);
   const [periods, setPeriods] = useState([]);
@@ -1095,7 +1171,7 @@ function App() {
     setAllPeriods(allResponse.data.data || []);
   };
 
-  const persistWorkflowStep = async (stepId, files, selectedYear, selectedMonth) => {
+  const persistWorkflowStep = async (stepId, files, selectedYear, selectedMonth, financialManual = {}, portfolioManual = {}) => {
     let period = periods.find(item => String(item.clientRuc) === String(timelineClient?.ruc) && String(item.year) === String(selectedYear) && String(item.month) === String(selectedMonth));
     try {
       if (!period) {
@@ -1119,12 +1195,15 @@ function App() {
           const formData = new FormData();
           formData.append('files', files[type]);
           if (stepId === 'cxc') {
-            formData.append('group', 'Portfolio');
-            formData.append('types', type === 'receivable' ? 'CXC' : 'CXP');
-            await api.post(`/periods/${period.id}/documents`, formData);
+            const portfolioForm = new FormData();
+            portfolioForm.append('file', files[type]);
+            portfolioForm.append('accountType', type === 'receivable' ? 'CXC' : 'CXP');
+            if (portfolioManual[type]) portfolioForm.append('manualValues', JSON.stringify(portfolioManual[type]));
+            await api.post(`/periods/${period.id}/portfolio/import`, portfolioForm);
           } else {
             formData.append('group', 'Financial Statements');
             formData.append('types', type);
+            if (financialManual[type]) formData.append('manualValues', JSON.stringify(financialManual[type]));
             await api.post(`/periods/${period.id}/documents`, formData);
           }
         }
@@ -1139,7 +1218,10 @@ function App() {
         await api.post(`/periods/${period.id}/declaration`, formData);
       }
       return true;
-    } catch (error) { alert(error?.response?.data?.error || error?.message || 'No se pudo guardar el paso.'); return false; }
+    } catch (error) {
+      setWorkflowMessage(error?.response?.data?.error || error?.message || 'No se pudo guardar el paso.');
+      return false;
+    }
   };
   const persistWorkflowSelection = async (selectedYear, selectedMonth) => {
     const monthNumber = MONTHS.findIndex(item => item.name === selectedMonth) + 1;
@@ -1285,6 +1367,18 @@ function App() {
           onConfirm={() => deleteClient(clientToDisable)}
         />
       )}
+      {workflowMessage && (
+        <div className="workflow-message-backdrop" role="presentation" onMouseDown={() => setWorkflowMessage('')}>
+          <section className="workflow-message-modal" role="alertdialog" aria-modal="true" aria-labelledby="workflow-message-title" onMouseDown={event => event.stopPropagation()}>
+            <div className="workflow-message-icon">!</div>
+            <div className="workflow-message-content">
+              <h3 id="workflow-message-title">Documento no válido</h3>
+              <p>{workflowMessage}</p>
+            </div>
+            <button type="button" className="workflow-message-button" onClick={() => setWorkflowMessage('')}>Aceptar</button>
+          </section>
+        </div>
+      )}
     </div>
     </WORKFLOW_CONTEXT.Provider>
     </RequireAuth>
@@ -1355,29 +1449,6 @@ function Dashboard({ search, setSearch, clients, generalTotals = { completed: 0,
       setLoadingClientDashboard(false);
     }
   };
-
-  /* Datos de demostración eliminados: el dashboard solo muestra información persistida. */
-  /*
-    const demoMonths = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio'].map((month, index) => {
-      const financial = index !== 2;
-      const portfolio = index === 0 || index === 1 || index === 4;
-      const iva = index !== 3;
-      const retentions = index === 0 || index === 2 || index === 5;
-      const incomeTax = index === 0 ? 'calculado' : index === 1 ? 'pendiente' : 'no_aplica';
-      const indicators = {
-        financialStatements: { status: financial ? 'entregado' : 'pendiente', version: financial ? (index === 1 ? 2 : 1) : null },
-        portfolio: { status: portfolio ? 'entregado' : 'pendiente', version: portfolio ? 1 : null },
-        iva: { status: iva ? 'declarado' : 'pendiente', amount: iva ? 1250 + index * 100 : 0 },
-        retentions: { status: retentions ? 'declarado' : 'pendiente', amount: retentions ? 320 + index * 25 : 0 },
-        incomeTax: { status: incomeTax, amount: incomeTax === 'calculado' ? 180 : 0 }
-      };
-      const applicable = Object.values(indicators).filter(item => item.status !== 'no_aplica');
-      const completed = applicable.filter(item => ['entregado', 'declarado', 'calculado'].includes(item.status)).length;
-      return { periodId: `demo-${index + 1}`, month, monthNum: index + 1, indicators, compliancePercentage: Math.round(completed / applicable.length * 100) };
-    });
-    const alerts = demoMonths.flatMap(month => Object.entries(month.indicators).filter(([, item]) => item.status === 'pendiente').map(([indicator]) => ({ month: month.month, indicator, severity: month.monthNum < 3 ? 'alta' : 'media', message: `${indicator} pendiente en ${month.month}` })));
-    return { demo: true, client, year: Number(selectedYear), months: demoMonths, summary: { compliancePercentage: Math.round(demoMonths.reduce((sum, month) => sum + month.compliancePercentage, 0) / demoMonths.length), totalMonths: demoMonths.length, pendingAlerts: alerts.length }, alerts };
-  }; */
 
   useEffect(() => {
     if (selectedClientDashboard && dashboardYear) openClientDashboard(selectedClientDashboard);
@@ -1535,8 +1606,8 @@ function ClientsModule({ clients, periods = [], search, setSearch, onOpenCreate,
   const [periodError, setPeriodError] = useState('');
   const [periodModalPeriods, setPeriodModalPeriods] = useState([]);
   const [periodModalYear, setPeriodModalYear] = useState(String(year || '2026'));
-  const [historyClient, setHistoryClient] = useState(null);
   const [openActionsClient, setOpenActionsClient] = useState(null);
+  const [clientPage, setClientPage] = useState(1);
   useEffect(() => {
     if (selectedUser) window.setTimeout(() => document.getElementById('assigned-clients-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
   }, [selectedUser]);
@@ -1549,10 +1620,15 @@ function ClientsModule({ clients, periods = [], search, setSearch, onOpenCreate,
   }, []);
   const assignedUsers = Array.from(new Set(clients.map(client => client.assignedUser || `Usuario ${client.userCode || 'sin asignar'}`))).sort();
   const selectedUserClients = clients.filter(client => (client.assignedUser || `Usuario ${client.userCode || 'sin asignar'}`) === selectedUser);
+  const clientsForTable = isAdmin ? selectedUserClients : clients;
+  const clientsPerPage = 10;
+  const totalClientPages = Math.max(1, Math.ceil(clientsForTable.length / clientsPerPage));
+  const visibleClients = clientsForTable.slice((clientPage - 1) * clientsPerPage, clientPage * clientsPerPage);
+  useEffect(() => { setClientPage(1); }, [search, selectedUser]);
+  useEffect(() => { setClientPage(current => Math.min(current, totalClientPages)); }, [totalClientPages]);
   const matchesClient = (period, client) => String(period.clientId) === String(client?.id)
     || String(period.clientRuc) === String(client?.ruc);
   const clientPeriods = periodModalClient ? periodModalPeriods : [];
-  const visibleClientPeriods = clientPeriods.filter(period => String(period.year) === String(periodModalYear));
   const openPeriodModal = async client => {
     setPeriodModalClient(client);
     setPeriodModalYear(String(year || '2026'));
@@ -1646,7 +1722,7 @@ function ClientsModule({ clients, periods = [], search, setSearch, onOpenCreate,
               </tr>
             </thead>
             <tbody>
-              {(isAdmin ? selectedUserClients : clients).map(client => (
+              {visibleClients.map(client => (
                 <tr key={client.ruc}>
                   <td>
                     <strong>{client.name}</strong>
@@ -1688,9 +1764,17 @@ function ClientsModule({ clients, periods = [], search, setSearch, onOpenCreate,
               ))}
             </tbody>
           </table>
-          {!(isAdmin ? selectedUserClients : clients).length && <div className="empty">No se encontraron clientes.</div>}
-        </div>
-      </section>}
+           {!clientsForTable.length && <div className="empty">No se encontraron clientes.</div>}
+         </div>
+         {clientsForTable.length > 0 && <div className="clients-pagination" aria-label="Paginación de clientes">
+           <span>Mostrando {((clientPage - 1) * clientsPerPage) + 1}-{Math.min(clientPage * clientsPerPage, clientsForTable.length)} de {clientsForTable.length} registros</span>
+           <div className="clients-pagination-actions">
+             <button type="button" className="outline" onClick={() => setClientPage(current => Math.max(1, current - 1))} disabled={clientPage === 1}>Anterior</button>
+             <span>Página {clientPage} de {totalClientPages}</span>
+             <button type="button" className="outline" onClick={() => setClientPage(current => Math.min(totalClientPages, current + 1))} disabled={clientPage === totalClientPages}>Siguiente</button>
+           </div>
+         </div>}
+       </section>}
       {periodModalClient && <div className="modal-backdrop" onMouseDown={() => setPeriodModalClient(null)}><section className="modal period-picker-modal" onMouseDown={event => event.stopPropagation()}><button type="button" className="modal-close" onClick={() => setPeriodModalClient(null)}><Icon name="close"/></button><p className="eyebrow">PERIODOS DEL CLIENTE</p><h2>{periodModalClient.name}</h2><p>Selecciona un periodo para continuar o crea uno nuevo.</p><div className="period-picker-list">{clientPeriods.length ? clientPeriods.map(period => <div className="period-picker-row" key={period.id}><div><strong>{period.year} · {period.month}</strong><small>{period.status}</small></div><button type="button" className="client-dashboard-btn" onClick={() => { setPeriodModalClient(null); onOpenTimeline(periodModalClient, period.year, period.month); }}>Continuar</button></div>) : <div className="empty">Este cliente todavía no tiene periodos creados.</div>}</div><div className="modal-actions"><button type="button" className="primary" onClick={() => { setNewPeriodClient(periodModalClient); setPeriodModalClient(null); setPeriodError(''); setNewPeriodYear(String(year || '2026')); setNewPeriodMonth('Enero'); }}><Icon name="plus" size={15}/> Crear periodo</button></div></section></div>}
       {newPeriodClient && <div className="modal-backdrop" onMouseDown={() => !creatingPeriod && setNewPeriodClient(null)}><form className="modal new-period-modal" onSubmit={submitNewPeriod} onMouseDown={event => event.stopPropagation()}><button type="button" className="modal-close" onClick={() => setNewPeriodClient(null)}><Icon name="close"/></button><p className="eyebrow">NUEVO PERIODO</p><h2>{newPeriodClient.name}</h2><p>Selecciona el año y mes para crear el periodo.</p>{periodError && <div className="new-period-error" role="alert"><span>{periodError}</span></div>}<div className="form-grid"><label>Año fiscal<select value={newPeriodYear} onChange={event => { setNewPeriodYear(event.target.value); setPeriodError(''); }}>{Array.from({ length: 31 }, (_, index) => 2020 + index).map(item => <option key={item}>{item}</option>)}</select></label><label>Mes<select value={newPeriodMonth} onChange={event => { setNewPeriodMonth(event.target.value); setPeriodError(''); }}>{MONTHS.map(item => <option key={item.name}>{item.name}</option>)}</select></label></div><div className="modal-actions"><button type="button" className="outline" onClick={() => setNewPeriodClient(null)}>Cancelar</button><button type="submit" className="primary" disabled={creatingPeriod}>{creatingPeriod ? 'Creando…' : 'Crear periodo'}</button></div></form></div>}
       {timelineClient && <section className="timeline-screen">
@@ -1698,18 +1782,6 @@ function ClientsModule({ clients, periods = [], search, setSearch, onOpenCreate,
       </section>}
     </div>
   );
-}
-
-function ClientDocumentsHistoryModal({ client, year, onClose }) {
-  const [documents, setDocuments] = useState([]);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    api.get('/periods/documents', { params: { clientId: client.id, year } })
-      .then(({ data }) => setDocuments(data.data || []))
-      .catch(() => setDocuments([]))
-      .finally(() => setLoading(false));
-  }, [client.id, year]);
-  return <section className="panel client-history-section"><div className="panel-head"><div><p className="eyebrow">HISTORIAL DEL CLIENTE</p><h3>{client.name}</h3><p>Documentos guardados y sus versiones del año {year}.</p></div><button type="button" className="outline" onClick={onClose}>Ocultar historial</button></div>{loading ? <div className="empty">Cargando historial...</div> : documents.length ? <div className="client-history-list">{documents.map(document => <div className="client-history-row" key={document.id}><div><strong>{document.originalName}</strong><small>{document.documentGroup} · {document.documentType} · v{document.version}.0</small></div><button type="button" className="row-upload-btn" onClick={() => openProtectedDocument(document.periodId, document.id).catch(() => alert('No se pudo visualizar el documento.'))}><Icon name="eye" size={14}/> Ver</button></div>)}</div> : <div className="empty">No hay documentos guardados para este cliente.</div>}</section>;
 }
 
 function PeriodEntryModal({ client, year, onClose, onOpenPeriodEntry, onOpenTimeline }) {
@@ -1809,57 +1881,6 @@ function ClientHistoryScreen({ client, year, onClose, onOpenAnnualTaxDetail, onO
     });
     return () => monthFilter?.remove();
   }, [selectedYear, selectedHistoryMonths, periods, sentPeriodIds]);
-  useEffect(() => {
-    const panel = document.querySelector('.declaration-history-card');
-    const periodsPanel = document.querySelector('.client-history-panel');
-    const buttonHost = periodsPanel || panel;
-    if (!buttonHost) return;
-    const hasDeclarationData = declarations.some(item => item.data?.id != null);
-    const showExportMessage = message => {
-      const backdrop = document.createElement('div');
-      backdrop.className = 'export-message-backdrop';
-      backdrop.innerHTML = `<section class="export-message-card" role="alertdialog" aria-modal="true"><div class="export-message-icon">!</div><div><h3>Descarga no disponible</h3><p>${message}</p></div><button type="button" class="export-message-close">Cerrar</button></section>`;
-      backdrop.addEventListener('click', event => { if (event.target === backdrop || event.target.closest('.export-message-close')) backdrop.remove(); });
-      document.body.appendChild(backdrop);
-      window.setTimeout(() => backdrop.remove(), 4000);
-    };
-    let actions = buttonHost.querySelector('.declaration-export-actions');
-    if (!actions) { actions = document.createElement('div'); actions.className = 'declaration-export-actions'; buttonHost.appendChild(actions); }
-    let button = actions.querySelector('.declaration-excel-button');
-    if (!button) { button = document.createElement('button'); button.type = 'button'; button.className = 'declaration-excel-button'; button.textContent = 'Descargar Excel'; actions.appendChild(button); }
-    let pdfButton = actions.querySelector('.declaration-pdf-button');
-    if (!pdfButton) { pdfButton = document.createElement('button'); pdfButton.type = 'button'; pdfButton.className = 'declaration-pdf-button'; pdfButton.textContent = 'Descargar PDF'; actions.appendChild(pdfButton); }
-    button.disabled = !hasDeclarationData; pdfButton.disabled = !hasDeclarationData;
-    button.title = hasDeclarationData ? 'Descargar declaraciones en Excel' : 'No hay declaraciones cargadas para exportar';
-    pdfButton.title = hasDeclarationData ? 'Descargar declaraciones en PDF' : 'No hay declaraciones cargadas para descargar';
-    button.onclick = async () => {
-      if (!hasDeclarationData) { showExportMessage('No hay declaraciones cargadas para generar el Excel.'); return; }
-      try {
-        const months = selectedHistoryMonths.length ? `&months=${selectedHistoryMonths.map(month => MONTHS.findIndex(item => item.name === month) + 1).filter(month => month > 0).join(',')}` : '';
-        const response = await api.get(`/periods/declarations/export?clientId=${encodeURIComponent(client.id)}&year=${encodeURIComponent(selectedYear)}${months}`, { responseType: 'blob' });
-        const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url; const clientFileName = String(client.name || 'cliente').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, ''); link.download = `declaraciones-${clientFileName}-${selectedYear}.xlsx`; link.click(); URL.revokeObjectURL(url);
-      } catch (error) {
-        let message = error?.response?.data?.error;
-        if (!message && error?.response?.data instanceof Blob) { try { message = JSON.parse(await error.response.data.text()).error; } catch { /* respuesta no JSON */ } }
-        showExportMessage(message || 'No se pudo descargar el Excel de declaraciones.');
-      }
-    };
-    pdfButton.onclick = async () => {
-      if (!hasDeclarationData) { showExportMessage('No hay declaraciones cargadas para generar el PDF.'); return; }
-      const months = selectedHistoryMonths.length ? `&months=${selectedHistoryMonths.map(month => MONTHS.findIndex(item => item.name === month) + 1).filter(month => month > 0).join(',')}` : '';
-      try {
-        const response = await api.get(`/periods/declarations/preview-pdf?clientId=${encodeURIComponent(client.id)}&year=${encodeURIComponent(selectedYear)}${months}`, { responseType: 'blob' });
-        const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url;
-        const clientFileName = String(client.name || 'cliente').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
-        link.download = `declaraciones-${clientFileName}-${selectedYear}.pdf`; link.click(); URL.revokeObjectURL(url);
-      } catch (error) {
-        let message = error?.response?.data?.error;
-        if (!message && error?.response?.data instanceof Blob) { try { message = JSON.parse(await error.response.data.text()).error; } catch { /* respuesta no JSON */ } }
-        showExportMessage(message || 'No se pudo descargar el PDF de declaraciones.');
-      }
-    };
-    return () => actions?.remove();
-  }, [client.id, selectedYear, selectedHistoryMonths, declarations]);
   useEffect(() => {
     const card = document.querySelector('.declaration-history-card');
     if (!card) return;
@@ -1999,16 +2020,6 @@ function ClientHistoryScreen({ client, year, onClose, onOpenAnnualTaxDetail, onO
     button.className = 'primary history-entry-button';
     button.textContent = 'Ingresar información';
     button.onclick = () => setShowPeriodEntry(true);
-    /*
-      const selectedEntryYear = window.prompt('Año fiscal:', String(selectedYear || year));
-      if (!selectedEntryYear || !/^\\d{4}$/.test(selectedEntryYear)) return;
-      const selectedEntryMonth = window.prompt(`Mes (${MONTHS.map(item => item.name).join(', ')}):`, 'Enero');
-      const month = MONTHS.find(item => item.name.toLowerCase() === String(selectedEntryMonth || '').trim().toLowerCase());
-      if (!month) { window.alert('Ingresa un mes válido.'); return; }
-      button.disabled = true;
-      await onOpenPeriodEntry(client, selectedEntryYear, month.name, message => window.alert(message));
-      button.disabled = false;
-      */
     if (!card) return undefined;
     const action = card.querySelector('.client-history-annual-tax-action');
     if (action) action.prepend(button);
@@ -2203,15 +2214,6 @@ function ClientHistoryScreen({ client, year, onClose, onOpenAnnualTaxDetail, onO
     });
   }, [visiblePeriods, selectedHistoryMonths, sentPeriodIds]);
   return <div className="client-history-screen"><div className="client-history-topbar"><div><p className="eyebrow">HISTORIAL DEL CLIENTE</p><h2>{client.name}</h2><p>Consulta periodos, documentos y declaraciones registradas.</p></div><button type="button" className="outline" onClick={onClose}>Volver a clientes</button></div><div className="client-history-grid"><section className="panel client-history-panel"><div className="panel-head"><div><h3>Periodos registrados</h3><p>Consulta el avance de cada periodo creado para este cliente.</p></div><label className="history-year-filter">A&Ntilde;O FISCAL<select value={selectedYear} onChange={event => setSelectedYear(event.target.value)}>{years.map(item => <option key={item}>{item}</option>)}</select></label></div>{loading ? <div className="empty">Cargando historial...</div> : <div className="table-wrap"><table className="client-history-table"><thead><tr><th>A&Ntilde;O</th><th>MES</th><th>ESTADO</th><th>DOCUMENTOS SUBIDOS</th><th>CREADO</th></tr></thead><tbody>{visiblePeriods.map(period => { const periodDocuments = documents.filter(item => String(item.periodId) === String(period.id)); return <tr key={period.id}><td><strong>{period.year}</strong></td><td>{period.month}</td><td><em className={`badge ${period.status === 'Completado' ? 'green' : 'orange'}`}>{period.status}</em></td><td><div className="history-documents">{periodDocuments.length ? periodDocuments.map(document => <button type="button" key={document.id} onClick={() => openDocument(document)}>{document.originalName} &middot; v{document.version}.0</button>) : <small>Sin documentos</small>}</div></td><td>{period.createdAt ? new Date(period.createdAt).toLocaleDateString('es-EC') : '—'}</td></tr>; })}</tbody></table>{!visiblePeriods.length && <div className="empty">No hay periodos registrados para este a&ntilde;o.</div>}</div>}</section><aside className="client-history-side"><section className="panel declaration-history-card"><div className="panel-head"><div><h3>Declaraciones mensuales</h3><p>Consulta de valores declarados por mes. Solo lectura.</p></div></div><div className="declaration-summary-total"><div><small>IVA acumulado</small><strong>{money(iva)}</strong></div><div><small>Retenciones acumuladas</small><strong>{money(retentions)}</strong></div><div><small>Total anual</small><strong>{money(iva + retentions)}</strong></div></div><div className="declaration-summary-list">{visiblePeriods.map(period => { const item = declarationByPeriod.get(String(period.id)); if (!item) return null; return <div className="declaration-summary-row" key={period.id}><span><strong>{period.month}</strong><b>{money(item.iva)}</b></span><span><small>Retenciones</small><b>{money(item.retentions)}</b></span><span><small>Total</small><b>{money(Number(item.iva) + Number(item.retentions))}</b></span></div>; })}{!annual.length && <div className="empty">No hay declaraciones registradas.</div>}</div></section><section className="panel accounts-history-card"><div className="panel-head"><div><h3>Cuentas</h3><p>Documentos de CxC y CxP registrados por mes.</p></div></div><div className="accounts-history-list">{visiblePeriods.map(period => { const accountDocuments = documents.filter(item => String(item.periodId) === String(period.id) && String(item.documentGroup || item.document_group).toLowerCase() === 'portfolio'); return <div className="accounts-history-row" key={period.id}><div><strong>{period.month}</strong><small>{accountDocuments.length ? `${accountDocuments.length} documento${accountDocuments.length === 1 ? '' : 's'}` : 'Sin documentos'}</small></div>{accountDocuments.length ? <div className="accounts-history-files">{accountDocuments.map(document => <button type="button" key={document.id} onClick={() => openDocument(document)}>{document.originalName} · v{document.version}.0</button>)}</div> : <span className="accounts-history-empty">Pendiente</span>}</div>; })}{!visiblePeriods.length && <div className="empty">No hay periodos creados para este año.</div>}</div></section></aside></div></div>;
-}
-
-function AccountsDataPanel({ client, year }) {
-  const [summary, setSummary] = useState([]);
-  useEffect(() => { api.get(`/clients/${client.id}/portfolio/${year}/summary`).then(({ data }) => setSummary(data.data || [])).catch(() => setSummary([])); }, [client.id, year]);
-  const money = value => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value) || 0);
-  const totals = type => summary.filter(item => item.accountType === type).reduce((sum, item) => sum + Number(item.totalAmount || 0), 0);
-  const pending = type => summary.filter(item => item.accountType === type).reduce((sum, item) => sum + Number(item.pendingAmount || 0), 0);
-  return <section className="panel accounts-data-card"><div className="panel-head"><div><h3>Cuentas</h3><p>Datos procesados de cuentas por cobrar y por pagar.</p></div></div><div className="accounts-data-totals"><div><small>Cuentas por cobrar</small><strong>{money(totals('CXC'))}</strong><span>Saldo pendiente: {money(pending('CXC'))}</span></div><div><small>Cuentas por pagar</small><strong>{money(totals('CXP'))}</strong><span>Saldo pendiente: {money(pending('CXP'))}</span></div></div><div className="accounts-data-list">{summary.length ? summary.map(item => <div className="accounts-data-row" key={`${item.accountType}-${item.fiscalMonth}`}><span><strong>{new Date(2000, Number(item.fiscalMonth) - 1, 1).toLocaleString('es-ES', { month: 'long' })}</strong><small>{item.accountType === 'CXC' ? 'Por cobrar' : 'Por pagar'}</small></span><span><small>Total</small><b>{money(item.totalAmount)}</b></span><span><small>Pendiente</small><b>{money(item.pendingAmount)}</b></span><span><small>Movimientos</small><b>{item.movementCount || 0}</b></span></div>) : <div className="empty">No hay datos de cuentas procesados para este año.</div>}</div></section>;
 }
 
 function ClientHistoryPage({ clients, year, onClose, onOpenPeriodEntry, onOpenTimeline }) {
@@ -3243,37 +3245,6 @@ function FinancialStatementsModule({ clients, year, documentGroup = 'Financial S
   );
 }
 
-/* ==========================================================================
-   MÓDULO 4: CUENTAS POR COBRAR Y PAGAR (CXC Y CXP)
-   ========================================================================== */
-function WorkflowModule({ clients, year, workflow, setWorkflow }) {
-  const [clientRuc, setClientRuc] = useState(clients[0]?.ruc || ''), [month, setMonth] = useState('Julio');
-  const current = workflow.find(item => item.clientRuc === clientRuc && item.year === String(year) && item.month === month);
-  const steps = [['financial', 'Estados Financieros'], ['accounts', 'CxC / CxP'], ['iva', 'IVA PDF'], ['retentions', 'Retenciones PDF'], ['tax', 'Impuesto a la Renta']];
-  const update = key => setWorkflow(old => old.map(item => item.id === current?.id ? { ...item, [key]: !item[key] } : item));
-  const complete = () => { if (current && steps.every(([key]) => current[key])) setWorkflow(old => old.map(item => item.id === current.id ? { ...item, completed: true } : item)); };
-  const share = () => { if (current?.completed) setWorkflow(old => old.map(item => item.id === current.id ? { ...item, shared: true } : item)); };
-  return <div className="content workflow-module"><section className="welcome"><div><p className="eyebrow">FLUJO OPERATIVO · DATOS LOCALES</p><h2>Flujo general</h2><p>Completa cada etapa del periodo en orden. Los cambios se guardan en esta sesión.</p></div></section><section className="panel"><div className="workflow-selectors"><label>Cliente<select value={clientRuc} onChange={e => setClientRuc(e.target.value)}>{clients.map(c => <option key={c.ruc} value={c.ruc}>{c.name}</option>)}</select></label><label>Año<select value={year} disabled><option>{year}</option></select></label><label>Mes<select value={month} onChange={e => setMonth(e.target.value)}>{MONTHS.map(m => <option key={m.name}>{m.name}</option>)}</select></label></div>{current && <><div className="flow-progress"><strong>{current.completed ? 'Periodo completado' : `${steps.filter(([key]) => current[key]).length} de ${steps.length} etapas completadas`}</strong><div className="progress-line"><span style={{ width: `${steps.filter(([key]) => current[key]).length / steps.length * 100}%` }}/></div></div><div className="flow-steps">{steps.map(([key, label], index) => <button key={key} className={`flow-step-card ${current[key] ? 'complete' : ''}`} onClick={() => update(key)} disabled={current.completed}><span>{current[key] ? '✓' : index + 1}</span><strong>{label}</strong><small>{current[key] ? 'Registrado' : 'Pendiente · hacer clic para simular carga'}</small></button>)}</div><div className="flow-actions"><button className="primary" onClick={complete} disabled={current.completed || !steps.every(([key]) => current[key])}>Marcar periodo como completado</button><button className="outline" onClick={share} disabled={!current.completed}>{current.shared ? 'Documentación compartida' : 'Compartir documentación'}</button></div>{current.completed && <div className="form-success">Periodo {current.month} {current.year} listo para compartir.</div>}</>}</section></div>;
-}
-
-function IncomeTaxModule({ clients, year }) {
-  const [clientRuc, setClientRuc] = useState(clients[0]?.ruc || ''), [taxpayer, setTaxpayer] = useState('Sociedad'), [regime, setRegime] = useState('Régimen general'), [accounting, setAccounting] = useState('Sí'), [taxType, setTaxType] = useState('Impuesto a la renta'), [rate, setRate] = useState('25'), [formula, setFormula] = useState('Base imponible × porcentaje'), [periodicity, setPeriodicity] = useState('Anual'), [ivaBase, setIvaBase] = useState(''), [retentionBase, setRetentionBase] = useState(''), [enabled, setEnabled] = useState(true), [saved, setSavedState] = useState(false);
-  const setSaved = value => { setSavedState(value); if (value) void saveTaxConfiguration(); };
-  const base = (Number(ivaBase) || 0) + (Number(retentionBase) || 0);
-  const saveTaxConfiguration = async () => { const client = clients.find(item => item.ruc === clientRuc); if (!client?.id) return; try { await api.put(`/clients/${client.id}/income-tax/${year}`, { taxpayer, regime, accounting, taxType: 'Impuesto a la renta', rate, formula, periodicity, enabled }); setSavedState(true); } catch { setSavedState(false); alert('No se pudo guardar la configuración.'); } };
-  useEffect(() => { const client = clients.find(item => item.ruc === clientRuc); if (!client?.id) return; api.get(`/clients/${client.id}/income-tax/${year}`).then(({ data }) => { const config = data.data?.configuration; const baseData = data.data?.base || {}; if (config) { setTaxpayer(config.taxpayer); setRegime(config.regime); setAccounting(config.accounting === 'Yes' ? 'Sí' : config.accounting); setTaxType(config.taxType || 'Impuesto a la renta'); setRate(String(config.rate ?? '25')); setFormula(config.formula || 'Base imponible × porcentaje'); setPeriodicity(config.periodicity || 'Anual'); setEnabled(Boolean(config.enabled)); } setIvaBase(String(baseData.iva || 0)); setRetentionBase(String(baseData.retentions || 0)); }).catch(() => {}); }, [clientRuc, year, clients]);
-  useEffect(() => {
-    const client = clients.find(item => item.ruc === clientRuc);
-    if (!client?.id) { setIvaBase(''); setRetentionBase(''); return; }
-    api.get('/periods', { params: { clientId: client.id, year } }).then(async ({ data }) => {
-      const declarations = await Promise.all((data.data || []).map(period => api.get(`/periods/${period.id}/declaration`).then(response => response.data.data).catch(() => null)));
-      setIvaBase(String(declarations.reduce((sum, item) => sum + (Number(item?.iva) || 0), 0)));
-      setRetentionBase(String(declarations.reduce((sum, item) => sum + (Number(item?.retentions) || 0), 0)));
-    }).catch(() => { setIvaBase('0'); setRetentionBase('0'); });
-  }, [clientRuc, year, clients]);
-  return <div className="content tax-module"><section className="welcome"><div><p className="eyebrow">MÓDULO 6 · CONFIGURACIÓN {year}</p><h2>Impuesto a la Renta</h2><p>Configura los parámetros tributarios por empresa y año. El cálculo se habilitará posteriormente.</p></div><label className="rule-toggle"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}/><span>{enabled ? 'Reglas activas' : 'Reglas inactivas'}</span></label></section><div className="tax-grid"><section className="panel"><div className="panel-head"><div><h3>Parámetros tributarios</h3><p>Estos valores quedan asociados al año {year}.</p></div></div><div className="form-grid"><label>Empresa / cliente<select value={clientRuc} onChange={e => setClientRuc(e.target.value)}>{clients.map(c => <option key={c.ruc} value={c.ruc}>{c.name}</option>)}</select></label><label>Tipo de contribuyente<select value={taxpayer} onChange={e => setTaxpayer(e.target.value)}><option>Persona natural</option><option>Sociedad</option><option>Empresa pública</option><option>Otro</option></select></label><label>Régimen tributario<select value={regime} onChange={e => setRegime(e.target.value)}><option>Régimen general</option><option>RIMPE - Emprendedor</option><option>RIMPE - Negocio popular</option><option>Especial</option></select></label><label>Obligado a llevar contabilidad<select value={accounting} onChange={e => setAccounting(e.target.value)}><option>Sí</option><option>No</option></select></label><label>Impuesto aplicable<select value={taxType} onChange={e => setTaxType(e.target.value)}><option>Impuesto a la renta</option><option>Impuesto único</option><option>Exento / no aplica</option></select></label><label>Periodicidad<select value={periodicity} onChange={e => setPeriodicity(e.target.value)}><option>Anual</option><option>Anticipos</option><option>Anual + anticipos</option><option>Otra</option></select></label><label>Porcentaje (%)<input type="number" min="0" step="0.01" value={rate} onChange={e => setRate(e.target.value)}/></label><label>Fórmula de cálculo<input value={formula} onChange={e => setFormula(e.target.value)} placeholder="Ej. Base × porcentaje"/></label></div><div className="modal-actions"><button className="primary" onClick={() => setSaved(true)}><Icon name="check" size={16}/> Guardar configuración</button></div>{saved && <div className="form-success">Configuración guardada para {year}.</div>}</section><section className="panel"><div className="panel-head"><div><h3>Base de cálculo</h3><p>Información acumulada proveniente del Módulo 5.</p></div><span className="config-year">{year}</span></div><div className="form-grid"><label>IVA acumulado<input type="number" min="0" step="0.01" value={ivaBase} onChange={e => setIvaBase(e.target.value)} placeholder="0.00"/></label><label>Retenciones acumuladas<input type="number" min="0" step="0.01" value={retentionBase} onChange={e => setRetentionBase(e.target.value)} placeholder="0.00"/></label></div><div className="tax-base-card"><span>Base acumulada disponible</span><strong>${base.toFixed(2)}</strong><small>IVA + Retenciones · cálculo automático pendiente de desarrollo</small></div><div className="rule-list"><div><span className="rule-dot"/><div><strong>Regla para {taxpayer}</strong><small>{regime} · {accounting === 'Sí' ? 'Obligado' : 'No obligado'} a llevar contabilidad</small></div><b>{enabled ? 'Activa' : 'Inactiva'}</b></div><div><span className="rule-dot blue"/><div><strong>Parámetro anual</strong><small>{taxType} · {periodicity} · {rate}%</small></div><b>{year}</b></div></div></section></div></div>;
-}
-
 function AdminAssignedUsers({ clients, title = 'Usuarios / Contadores', description = 'Selecciona un usuario para consultar sus clientes.', onSelect }) {
   const users = Array.from(new Set(clients.map(client => client.assignedUser || `Usuario ${client.userCode || 'sin asignar'}`))).sort();
   return <section className="panel clients-registry"><div className="panel-head"><div><h3>{title}</h3><p>{description}</p></div></div><div className="table-wrap"><table className="client-table"><thead><tr><th>USUARIO</th><th>CLIENTES ASIGNADOS</th><th>ACCIÓN</th></tr></thead><tbody>{users.map(userName => { const count = clients.filter(client => (client.assignedUser || `Usuario ${client.userCode || 'sin asignar'}`) === userName).length; return <tr key={userName}><td><strong>{userName}</strong><small>Usuario del sistema</small></td><td>{count}</td><td><button type="button" className="client-dashboard-btn" onClick={() => { onSelect(userName); window.setTimeout(() => document.getElementById('assigned-clients-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80); }}>Ver clientes <Icon name="arrow" size={14}/></button></td></tr>; })}</tbody></table>{!users.length && <div className="empty">No hay usuarios con clientes asignados.</div>}</div></section>;
@@ -3360,246 +3331,6 @@ function DeclarationReadonlyModule({ clients, year, clientRuc, selectedYear, mon
   return <div className="content declarations-module"><section className="welcome"><div><p className="eyebrow">DECLARACIONES · SOLO LECTURA</p><h2>Declaración mensual</h2><p>{client?.name || 'Cliente'} · {month} {selectedYear}</p></div></section><section className="panel"><div className="panel-head"><div><h3>Detalle de declaración</h3><p>Los documentos y valores se muestran únicamente para consulta.</p></div></div>{declaration ? <div className="form-grid"><label>Valor IVA ($)<input value={money(declaration.iva)} readOnly /></label><label>Valor retenciones ($)<input value={money(declaration.retentions)} readOnly /></label><label className="full-width">PDF de IVA<input value={declaration.ivaFile || 'No cargado'} readOnly /></label><label className="full-width">PDF de retenciones<input value={declaration.retentionFile || 'No cargado'} readOnly /></label><div className="declaration-total"><span>Total mensual</span><strong>{money(Number(declaration.iva) + Number(declaration.retentions))}</strong></div></div> : <div className="empty">No se encontró una declaración registrada para este período.</div>}</section></div>;
 }
 
-function DeclarationsModule({ clients, year }) {
-  const [rows, setRows] = useState([]), [clientRuc, setClientRuc] = useState(clients[0]?.ruc || ''), [month, setMonth] = useState('Julio'), [iva, setIva] = useState(''), [retentions, setRetentions] = useState(''), [ivaFile, setIvaFile] = useState(null), [retentionFile, setRetentionFile] = useState(null), [historyYear, setHistoryYear] = useState(String(year)), [message, setMessage] = useState('');
-  const money = v => new Intl.NumberFormat('es-EC', { style: 'currency', currency: 'USD' }).format(v || 0), num = v => Number(String(v).replace(',', '.')) || 0;
-  const annual = rows.filter(r => r.year === historyYear), total = key => annual.reduce((s, r) => s + r[key], 0);
-  const pdf = (file, setFile, setValue) => { setFile(file); const m = file?.name.match(/(?:^|[_ -])(\d+[.,]\d{1,2})(?=\.|$)/); if (m) setValue(m[1].replace(',', '.')); };
-  const save = e => { e.preventDefault(); if (!iva && !retentions) return setMessage('Registra al menos un valor declarado.'); const client = clients.find(c => c.ruc === clientRuc), i = num(iva), r = num(retentions), row = { id: `${clientRuc}-${year}-${month}`, clientName: client?.name || 'Cliente', year: String(year), month, iva: i, retentions: r, total: i + r, ivaFile: ivaFile?.name || '', retentionFile: retentionFile?.name || '' }; setRows(old => [row, ...old.filter(x => x.id !== row.id)]); setMessage('Declaración guardada correctamente.'); setIva(''); setRetentions(''); setIvaFile(null); setRetentionFile(null); };
-  return <div className="content declarations-module"><section className="welcome"><div><p className="eyebrow">MÓDULO 5 · {year}</p><h2>Declaraciones mensuales</h2><p>Carga PDFs de IVA y retenciones, registra los valores y consulta el histórico anual.</p></div></section><section className="metrics declarations-metrics"><Metric icon="receipt" title="Total anual" value={money(total('total'))} note={`${historyYear} · ${annual.length} meses`} tone="violet"/><Metric icon="file" title="Meses registrados" value={annual.length} note="Declaraciones guardadas" tone="blue"/><Metric icon="shield" title="IVA acumulado" value={money(total('iva'))} note="Año consultado" tone="green"/><Metric icon="wallet" title="Retenciones" value={money(total('retentions'))} note="Año consultado" tone="orange"/></section><div className="declarations-grid"><form className="panel declaration-form" onSubmit={save}><div className="panel-head"><div><h3>Registrar declaración</h3><p>El total mensual se calcula automáticamente.</p></div></div><div className="form-grid"><label>Cliente *<select value={clientRuc} onChange={e => setClientRuc(e.target.value)}>{clients.map(c => <option key={c.ruc} value={c.ruc}>{c.name}</option>)}</select></label><label>Mes *<select value={month} onChange={e => setMonth(e.target.value)}>{MONTHS.map(m => <option key={m.name}>{m.name}</option>)}</select></label><label>Valor IVA ($)<input type="number" min="0" step="0.01" value={iva} onChange={e => setIva(e.target.value)} placeholder="0.00"/></label><label>Valor retenciones ($)<input type="number" min="0" step="0.01" value={retentions} onChange={e => setRetentions(e.target.value)} placeholder="0.00"/></label><label className="full-width">PDF de IVA<input type="file" accept=".pdf,application/pdf" onChange={e => pdf(e.target.files?.[0], setIvaFile, setIva)}/><small className="input-hint">Opcional; registra el valor manualmente si no se puede extraer.</small></label><label className="full-width">PDF de retenciones<input type="file" accept=".pdf,application/pdf" onChange={e => pdf(e.target.files?.[0], setRetentionFile, setRetentions)}/></label></div><div className="declaration-total"><span>Total mensual</span><strong>{money(num(iva) + num(retentions))}</strong></div>{message && <div className="form-success">{message}</div>}<div className="modal-actions"><button className="primary"><Icon name="check" size={16}/> Guardar declaración</button></div></form><section className="panel"><div className="panel-head"><div><h3>Histórico anual</h3><p>Consulta las declaraciones guardadas por año.</p></div><select className="year-select-dropdown" value={historyYear} onChange={e => setHistoryYear(e.target.value)}><option>{year}</option><option>{Number(year) - 1}</option></select></div><div className="table-wrap"><table><thead><tr><th>MES / CLIENTE</th><th>IVA</th><th>RETENCIONES</th><th>TOTAL</th><th>PDF</th></tr></thead><tbody>{annual.map(row => <tr key={row.id}><td><strong>{row.month}</strong><small>{row.clientName}</small></td><td>{money(row.iva)}</td><td>{money(row.retentions)}</td><td><strong>{money(row.total)}</strong></td><td><small>{[row.ivaFile, row.retentionFile].filter(Boolean).length}/2 archivos</small></td></tr>)}</tbody></table>{!annual.length && <div className="empty">Aún no hay declaraciones registradas para {historyYear}.</div>}</div></section></div></div>;
-}
-
-function AccountsModule({ clients, year }) {
-  const [accounts, setAccounts] = useState([]);
-  const [search, setSearch] = useState('');
-  const [selectedClient, setSelectedClient] = useState('ALL');
-  const [statusFilter, setStatusFilter] = useState('ALL');
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [historyRecord, setHistoryRecord] = useState(null);
-  const [targetClientRuc, setTargetClientRuc] = useState(null);
-
-  const filteredAccounts = useMemo(() => {
-    return accounts.filter(item => {
-      const matchYear = item.year === String(year);
-      const matchClient = selectedClient === 'ALL' || item.clientRuc === selectedClient;
-      const matchStatus = statusFilter === 'ALL' || item.deliveryStatus === statusFilter;
-      const matchSearch = item.clientName.toLowerCase().includes(search.toLowerCase()) ||
-                          item.clientRuc.includes(search) ||
-                          item.month.toLowerCase().includes(search.toLowerCase());
-      return matchYear && matchClient && matchStatus && matchSearch;
-    });
-  }, [accounts, year, selectedClient, statusFilter, search]);
-
-  const handleDeliveryStatusChange = (id, newStatus) => {
-    setAccounts(prev => prev.map(s => s.id === id ? { ...s, deliveryStatus: newStatus } : s));
-  };
-
-  const handleSaveUpload = (newUploadData) => {
-    setAccounts(prev => {
-      const existingIdx = prev.findIndex(s => s.clientRuc === newUploadData.clientRuc && s.month === newUploadData.month && s.year === String(year));
-      if (existingIdx >= 0) {
-        const existing = prev[existingIdx];
-        const nextVersionNum = `v${existing.versions.length + 1}.0`;
-        const newVersionObj = {
-          version: nextVersionNum,
-          fileName: newUploadData.fileName,
-          fileSize: newUploadData.fileSize || '1.1 MB',
-          uploadedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-          uploadedBy: 'Andrea López',
-          notes: newUploadData.notes || 'Nueva actualización de reporte CxC/CxP.'
-        };
-        const updated = [...prev];
-        updated[existingIdx] = {
-          ...existing,
-          versions: [newVersionObj, ...existing.versions]
-        };
-        return updated;
-      } else {
-        const newRecord = {
-          id: `cx-${Date.now()}`,
-          clientRuc: newUploadData.clientRuc,
-          clientName: newUploadData.clientName,
-          year: String(year),
-          month: newUploadData.month,
-          monthNum: MONTHS.findIndex(m => m.name === newUploadData.month) + 1,
-          deliveryStatus: 'Pendiente',
-          versions: [
-            {
-              version: 'v1.0',
-              fileName: newUploadData.fileName,
-              fileSize: newUploadData.fileSize || '1.2 MB',
-              uploadedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-              uploadedBy: 'Andrea López',
-              notes: newUploadData.notes || 'Carga inicial de reporte CxC/CxP.'
-            }
-          ]
-        };
-        return [newRecord, ...prev];
-      }
-    });
-    setShowUploadModal(false);
-    setTargetClientRuc(null);
-  };
-
-  return (
-    <div className="content financial-statements-module">
-      <section className="welcome">
-        <div>
-          <p className="eyebrow">CXC Y CXP</p>
-          <h2>Cuentas por Cobrar y Pagar</h2>
-          <p>Sube el archivo Excel de cartera de clientes/proveedores, controla versiones y el estado de entrega.</p>
-        </div>
-        <button className="primary" onClick={() => setShowUploadModal(true)}>
-          <Icon name="upload" size={18}/> Cargar reporte Excel
-        </button>
-      </section>
-
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h3>Reportes de Cartera · Año {year}</h3>
-            <p>Monitoreo de entregables de CxC/CxP en Excel, historial de versiones y estado de notificación.</p>
-          </div>
-        </div>
-
-        <div className="fs-filter-bar">
-          <div className="search filter-search">
-            <Icon name="search" size={18}/>
-            <input 
-              placeholder="Buscar por cliente, mes o RUC..." 
-              value={search} 
-              onChange={e => setSearch(e.target.value)}
-            />
-          </div>
-
-          <div className="filter-selects">
-            <select value={selectedClient} onChange={e => setSelectedClient(e.target.value)}>
-              <option value="ALL">Todos los clientes ({clients.length})</option>
-              {clients.map(c => (
-                <option key={c.ruc} value={c.ruc}>{c.name}</option>
-              ))}
-            </select>
-
-            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-              <option value="ALL">Todos los estados de envío</option>
-              <option value="Pendiente">Pendiente</option>
-              <option value="Enviado">Enviado</option>
-              <option value="Entregado">Entregado</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>CLIENTE</th>
-                <th>PERIODO</th>
-                <th>ARCHIVO EXCEL ACTUAL</th>
-                <th>VERSIONADO</th>
-                <th>FECHA Y USUARIO DE CARGA</th>
-                <th>ESTADO DE ENVÍO</th>
-                <th>ACCIONES</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredAccounts.map(item => {
-                const latestVersion = item.versions[0];
-                const statusTone = item.deliveryStatus === 'Entregado' ? 'green' : item.deliveryStatus === 'Enviado' ? 'blue' : 'orange';
-
-                return (
-                  <tr key={item.id}>
-                    <td>
-                      <strong>{item.clientName}</strong>
-                      <small>RUC {item.clientRuc}</small>
-                    </td>
-                    <td>
-                      <strong>{item.month}</strong>
-                      <small>{item.year}</small>
-                    </td>
-                    <td>
-                      <div className="excel-file-badge">
-                        <Icon name="file" size={20}/>
-                        <div>
-                          <strong>{latestVersion.fileName}</strong>
-                          <small>{latestVersion.fileSize}</small>
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      <button 
-                        className="version-pill" 
-                        onClick={() => setHistoryRecord(item)}
-                        title="Ver historial de versiones"
-                      >
-                        <span>{latestVersion.version}</span>
-                        <span className="v-count">({item.versions.length} ver.)</span>
-                      </button>
-                    </td>
-                    <td>
-                      <strong>{latestVersion.uploadedBy}</strong>
-                      <small>{latestVersion.uploadedAt}</small>
-                    </td>
-                    <td>
-                      <select 
-                        className={`delivery-status-select ${statusTone}`}
-                        value={item.deliveryStatus}
-                        onChange={(e) => handleDeliveryStatusChange(item.id, e.target.value)}
-                      >
-                        <option value="Pendiente">Pendiente</option>
-                        <option value="Enviado">Enviado</option>
-                        <option value="Entregado">Entregado</option>
-                      </select>
-                    </td>
-                    <td>
-                      <div className="action-buttons-wrap">
-                        <button 
-                          className="icon-action-btn" 
-                          title="Cargar nueva versión de este archivo"
-                          onClick={() => {
-                            setTargetClientRuc(item.clientRuc);
-                            setShowUploadModal(true);
-                          }}
-                        >
-                          <Icon name="upload" size={15}/>
-                        </button>
-                        <button 
-                          className="icon-action-btn" 
-                          title="Ver historial de versiones"
-                          onClick={() => setHistoryRecord(item)}
-                        >
-                          <Icon name="history" size={15}/>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {!filteredAccounts.length && <div className="empty">No se encontraron reportes de CxC o CxP registrados para este periodo.</div>}
-        </div>
-      </section>
-
-      {showUploadModal && (
-        <UploadExcelModal 
-          moduleTitle="Cuentas por Cobrar y Pagar"
-          clients={clients} 
-          defaultRuc={targetClientRuc}
-          onClose={() => { setShowUploadModal(false); setTargetClientRuc(null); }} 
-          onSave={handleSaveUpload}
-        />
-      )}
-
-      {historyRecord && (
-        <VersionHistoryModal 
-          record={historyRecord} 
-          onClose={() => setHistoryRecord(null)}
-        />
-      )}
-    </div>
-  );
-}
 
 /* ==========================================================================
    COMPONENTES COMPARTIDOS: MODALES
@@ -3766,23 +3497,6 @@ function Metric({ icon, title, value, note, tone }) {
   );
 }
 
-function ModuleView({ title, setShowModal }) {
-  return (
-    <div className="content module">
-      <p className="eyebrow">MÓDULO DE GESTIÓN</p>
-      <h2>{title}</h2>
-      <p>Esta sección está lista para conectarse con tus datos y flujos de aprobación.</p>
-      <div className="empty-module">
-        <div className="empty-icon"><Icon name="file" size={34}/></div>
-        <h3>Comienza a gestionar {title.toLowerCase()}</h3>
-        <p>Configura los registros y documentos que necesitas para este módulo.</p>
-        <button className="primary" onClick={() => setShowModal(true)}>
-          <Icon name="plus" size={18}/> Crear nuevo registro
-        </button>
-      </div>
-    </div>
-  );
-}
 
 function ConfigurationModule({ clients, onRestore, canAudit = false, userRole }) {
   const [activeSection, setActiveSection] = useState('');
@@ -3885,23 +3599,6 @@ function DeclarationPeriodModal({ periodId, existing, onClose, onSave }) {
   useEffect(() => { if (existing) { setCurrent(existing); setIva(String(existing.iva ?? '')); setRetentions(String(existing.retentions ?? '')); setIvaCosts(String(existing.ivaCosts ?? '')); setIvaValues(String(existing.ivaValues ?? '')); setEmployeeExpense(String(existing.employeeExpense ?? 0)); } }, [existing]);
   const remove = async type => { if (!window.confirm('¿Eliminar este PDF?')) return; try { const { data } = await api.delete(`/periods/${periodId}/declaration/${type}`); setCurrent(data.data); } catch { alert('No se pudo eliminar el PDF.'); } };
   // Envía temporalmente el PDF al backend para extraer el valor del formulario SRI.
-  const selectIvaPdf = async file => {
-    setIvaFile(file);
-    setPdfMessage('');
-    if (!file) return;
-    setReadingIva(true);
-    // FormData permite enviar el archivo binario en la petición HTTP.
-    const formData = new FormData();
-    formData.append('file', file);
-    try {
-      // La respuesta contiene el valor detectado y el código del campo utilizado.
-      const { data } = await api.post('/periods/declaration/parse', formData);
-      setIva(String(data.data.iva)); setIvaCosts(data.data.costs == null ? '' : String(data.data.costs)); setIvaValues(data.data.values == null ? '' : String(data.data.values));
-      setPdfMessage(`IVA leído automáticamente del campo ${data.data.field} del formulario SRI.`);
-    } catch (error) {
-      setPdfMessage(error?.response?.data?.error || 'No se pudo leer el valor del PDF. Puedes ingresarlo manualmente.');
-    } finally { setReadingIva(false); }
-  };
   // Envía los valores y archivos al componente padre para guardarlos en el backend.
   const submit = event => { event.preventDefault(); onSave({ iva, retentions, ivaCosts, ivaValues, employeeExpense, ivaFile, retentionFile }); };
   // Cada vez que cambia ivaFile, se lee automáticamente el PDF seleccionado.
@@ -3943,27 +3640,6 @@ function DeclarationPeriodModal({ periodId, existing, onClose, onSave }) {
   return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal declaration-period-modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}><Icon name="close"/></button><p className="eyebrow">DECLARACIONES</p><h2>Registrar declaración mensual</h2><p>{current ? 'Edita los valores o administra los PDFs guardados.' : 'Primero selecciona el PDF que deseas registrar.'}</p><div className="form-grid"><label>Valor IVA ($)<input type="number" min="0" step="0.01" value={iva} onChange={event => setIva(event.target.value)} placeholder="0.00"/></label><label>Valor retenciones ($)<input type="number" min="0" step="0.01" value={retentions} onChange={event => setRetentions(event.target.value)} placeholder="0.00"/></label><label className="full-width">PDF de IVA{current?.ivaFile && <div className="saved-declaration-file"><Icon name="file" size={15}/><span>{current.ivaFile}</span><button type="button" onClick={() => remove('iva')}>Eliminar</button></div>}<input type="file" accept=".pdf,application/pdf" onChange={event => setIvaFile(event.target.files?.[0] || null)}/>{ivaFile && <small className="input-hint">Nuevo: {ivaFile.name}</small>}</label><label className="full-width">PDF de retenciones{current?.retentionFile && <div className="saved-declaration-file"><Icon name="file" size={15}/><span>{current.retentionFile}</span><button type="button" onClick={() => remove('retentions')}>Eliminar</button></div>}<input type="file" accept=".pdf,application/pdf" onChange={event => setRetentionFile(event.target.files?.[0] || null)}/>{retentionFile && <small className="input-hint">Nuevo: {retentionFile.name}</small>}</label></div><div className="declaration-total"><span>Total mensual</span><strong>${((Number(iva) || 0) + (Number(retentions) || 0)).toFixed(2)}</strong></div><div className="modal-actions"><button type="button" className="outline" onClick={onClose}>Cancelar</button><button type="submit" className="primary"><Icon name="check" size={16}/> Guardar cambios</button></div></form></div>;
 }
 
-function DeclarationPeriodModalLegacy({ existing, onClose, onSave }) {
-  const [iva, setIva] = useState(existing?.iva != null ? String(existing.iva) : '');
-  const [retentions, setRetentions] = useState(existing?.retentions != null ? String(existing.retentions) : '');
-  const [ivaFile, setIvaFile] = useState(null);
-  const [retentionFile, setRetentionFile] = useState(null);
-  useEffect(() => { if (existing) { setIva(String(existing.iva ?? '')); setRetentions(String(existing.retentions ?? '')); } }, [existing]);
-  const hasPdf = Boolean(ivaFile || retentionFile || existing?.ivaFile || existing?.retentionFile);
-  const submit = event => {
-    event.preventDefault();
-    if (hasPdf) onSave({ iva, retentions, ivaFile, retentionFile });
-  };
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal" onSubmit={submit} onMouseDown={event => event.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}><Icon name="close"/></button><p className="eyebrow">DECLARACIONES</p><h2>Registrar declaración mensual</h2><p>Primero selecciona el PDF que deseas registrar.</p><div className="form-grid">{ivaFile && <label>Valor IVA ($)<input type="number" min="0" step="0.01" value={iva} onChange={event => setIva(event.target.value)} placeholder="0.00"/></label>}{retentionFile && <label>Valor retenciones ($)<input type="number" min="0" step="0.01" value={retentions} onChange={event => setRetentions(event.target.value)} placeholder="0.00"/></label>}<label className="full-width">PDF de IVA<input type="file" accept=".pdf,application/pdf" onChange={event => { setIvaFile(event.target.files?.[0] || null); setIva(''); }}/>{ivaFile && <small className="input-hint">{ivaFile.name}</small>}</label><label className="full-width">PDF de retenciones<input type="file" accept=".pdf,application/pdf" onChange={event => { setRetentionFile(event.target.files?.[0] || null); setRetentions(''); }}/>{retentionFile && <small className="input-hint">{retentionFile.name}</small>}</label></div>{hasPdf && <div className="declaration-total"><span>Total mensual</span><strong>${((Number(iva) || 0) + (Number(retentions) || 0)).toFixed(2)}</strong></div>}<div className="modal-actions"><button type="button" className="outline" onClick={onClose}>Cancelar</button><button type="submit" className="primary" disabled={!hasPdf}><Icon name="check" size={16}/> Guardar declaración</button></div></form></div>;
-}
-
-function DeclarationPeriodModalLegacyOld({ onClose, onSave }) {
-  const [iva, setIva] = useState('');
-  const [retentions, setRetentions] = useState('');
-  const [ivaFile, setIvaFile] = useState(null);
-  const [retentionFile, setRetentionFile] = useState(null);
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal" onSubmit={event => { event.preventDefault(); onSave({ iva, retentions, ivaFile, retentionFile }); }} onMouseDown={event => event.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}><Icon name="close"/></button><p className="eyebrow">DECLARACIONES</p><h2>Registrar declaración mensual</h2><p>Registra IVA y retenciones en un solo formulario para este periodo.</p><div className="form-grid"><label>Valor IVA ($)<input type="number" min="0" step="0.01" value={iva} onChange={event => setIva(event.target.value)} placeholder="0.00"/></label><label>Valor retenciones ($)<input type="number" min="0" step="0.01" value={retentions} onChange={event => setRetentions(event.target.value)} placeholder="0.00"/></label><label className="full-width">PDF de IVA<input type="file" accept=".pdf,application/pdf" onChange={event => setIvaFile(event.target.files?.[0] || null)}/>{ivaFile && <small className="input-hint">{ivaFile.name}</small>}</label><label className="full-width">PDF de retenciones<input type="file" accept=".pdf,application/pdf" onChange={event => setRetentionFile(event.target.files?.[0] || null)}/>{retentionFile && <small className="input-hint">{retentionFile.name}</small>}</label></div><div className="declaration-total"><span>Total mensual</span><strong>${((Number(iva) || 0) + (Number(retentions) || 0)).toFixed(2)}</strong></div><div className="modal-actions"><button type="button" className="outline" onClick={onClose}>Cancelar</button><button type="submit" className="primary"><Icon name="check" size={16}/> Guardar declaración</button></div></form></div>;
-}
 
 function IncomeTaxPeriodModal({ clientId, year, onClose, onSave, readOnly = false }) {
   const [taxpayer, setTaxpayer] = useState('Sociedad');
@@ -4026,28 +3702,6 @@ function AnnualTaxSummaryModal({ clientId, year, initialBase = { iva: 0, retenti
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal tax-period-modal annual-summary-modal" onMouseDown={event => event.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}><Icon name="close" /></button><p className="eyebrow">IMPUESTO A LA RENTA · RESUMEN ANUAL</p><h2>Impuesto a la Renta · {year}</h2><p>Consulta del cierre fiscal. Los parámetros de configuración son de solo lectura.</p><section className="panel"><div className="panel-head"><div><h3>Base anual de cálculo</h3><p>Acumulado desde las declaraciones mensuales.</p></div><span className="config-year">{year}</span></div><div className="form-grid"><label>IVA acumulado<input value={ivaAccumulated.toFixed(2)} readOnly /></label><label>Retenciones acumuladas<input value={retentionsAccumulated.toFixed(2)} readOnly /></label></div><div className="tax-base-card"><span>Base acumulada disponible</span><strong>${base.toFixed(2)}</strong><small>Valor actualizado del año fiscal</small></div></section><section className="panel annual-tax-preview"><div className="panel-head"><div><h3>Cierre anual · {year}</h3><p>Estado y resultado del impuesto.</p></div><span className="status-badge status-neutral">{declaration.status || annualStatus}</span></div><div className="annual-tax-preview-grid"><div><small>Impuesto estimado</small><strong>${calculatedTax.toFixed(2)}</strong></div><div className="annual-form101-cell"><small>Formulario 101</small><span>{declaration.annualDocumentId ? 'Presentado' : canCloseYear ? 'Se carga después del cierre' : 'Pendiente de presentación'}</span>{declaration.annualDocumentId && <div className="annual-form101-actions"><button type="button" className="row-upload-btn" onClick={() => openAnnualForm101(false)}>Ver PDF</button><button type="button" className="row-upload-btn" onClick={() => openAnnualForm101(true)}>Descargar</button></div>}{!canCloseYear && !declaration.annualDocumentId && <input type="file" accept=".pdf,application/pdf" onChange={event => setForm101(event.target.files?.[0] || null)}/>} {form101 && <em>{form101.name}</em>}</div><div><small>Vencimiento</small><span>{declaration.dueDate || 'Pendiente de cálculo'}</span></div></div><div className="annual-tax-actions"><button type="button" className="danger" onClick={closeAnnualYear} disabled={!canCloseYear}>Cerrar año</button>{!canCloseYear && !declaration.annualDocumentId && <button type="button" className="primary" onClick={presentAnnualYear}>Subir Formulario 101</button>}</div></section><div className="modal-actions"><button type="button" className="outline" onClick={onClose}>Cerrar</button></div></section></div>;
 }
 
-function AnnualTaxClosurePreview({ base, rate, readOnly }) {
-  const [status, setStatus] = useState('acumulando');
-  const calculatedTax = (Number(base || 0) * Number(rate || 0) / 100).toFixed(2);
-  return <section className="panel annual-tax-preview"><div className="panel-head"><div><h3>Cierre anual · Prueba</h3><p>Vista preliminar del ciclo anual del impuesto.</p></div><span className="status-badge status-neutral">{status}</span></div><div className="annual-tax-preview-grid"><div><small>Base acumulada</small><strong>${Number(base || 0).toFixed(2)}</strong></div><div><small>Impuesto calculado</small><strong>${calculatedTax}</strong></div><div><small>Formulario 101</small><span>{status === 'acumulando' ? 'Pendiente de cierre' : status === 'calculada' ? 'Pendiente de presentación' : 'Registrado'}</span></div></div>{!readOnly && <div className="modal-actions"><button type="button" className="outline" onClick={() => setStatus('calculada')} disabled={status !== 'acumulando'}>Cerrar año (prueba)</button><button type="button" className="primary" onClick={() => setStatus('presentada')} disabled={status !== 'calculada'}>Presentar (prueba)</button></div>}</section>;
-}
-
-function IncomeTaxPeriodModalLegacy({ periodId, clientId, year, onClose, onSave }) {
-  const [taxpayer, setTaxpayer] = useState('Sociedad');
-  const [regime, setRegime] = useState('Régimen general');
-  const [accounting, setAccounting] = useState('Sí');
-  const [periodicity, setPeriodicity] = useState('Anual');
-  const [rate, setRate] = useState('25');
-  const [formula, setFormula] = useState('Base imponible × porcentaje');
-  const [base, setBase] = useState('');
-  const [retentions, setRetentions] = useState('');
-  const [file, setFile] = useState(null);
-  useEffect(() => { if (!clientId || !year) return; api.get(`/clients/${clientId}/income-tax/${year}`).then(({ data }) => { const config = data.data?.configuration; if (!config) return; setTaxpayer(config.taxpayer || 'Sociedad'); setRegime(config.regime || 'Régimen general'); setAccounting(config.accounting === 'Yes' ? 'Sí' : config.accounting || 'Sí'); setPeriodicity(config.periodicity || 'Anual'); setRate(String(config.rate ?? '25')); setFormula(config.formula || 'Base imponible × porcentaje'); }).catch(() => {}); }, [clientId, year]);
-  useEffect(() => { if (!periodId) return; api.get(`/periods/${periodId}/declaration`).then(({ data }) => { const declaration = data.data; setBase(String(declaration?.iva ?? 0)); setRetentions(String(declaration?.retentions ?? 0)); }).catch(() => { setBase('0'); setRetentions('0'); }); }, [periodId]);
-  const total = (Number(base) || 0) + (Number(retentions) || 0);
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal tax-period-modal" onSubmit={event => { event.preventDefault(); onSave({ taxpayer, regime, accounting, periodicity, rate, formula, base, retentions, file }); }} onMouseDown={event => event.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}><Icon name="close"/></button><p className="eyebrow">IMPUESTO A LA RENTA · CONFIGURACIÓN DEL PERIODO</p><h2>Impuesto a la Renta</h2><p>Configura los parámetros tributarios y la base de cálculo de este periodo.</p><div className="tax-grid"><section className="panel"><div className="panel-head"><div><h3>Parámetros tributarios</h3><p>Valores aplicados al periodo.</p></div></div><div className="form-grid"><label>Tipo de contribuyente<select value={taxpayer} onChange={event => setTaxpayer(event.target.value)}><option>Persona natural</option><option>Sociedad</option><option>Empresa pública</option><option>Otro</option></select></label><label>Régimen tributario<select value={regime} onChange={event => setRegime(event.target.value)}><option>Régimen general</option><option>RIMPE - Emprendedor</option><option>RIMPE - Negocio popular</option><option>Especial</option></select></label><label>Obligado a llevar contabilidad<select value={accounting} onChange={event => setAccounting(event.target.value)}><option>Sí</option><option>No</option></select></label><label>Periodicidad<select value={periodicity} onChange={event => setPeriodicity(event.target.value)}><option>Anual</option><option>Anticipos</option><option>Anual + anticipos</option></select></label><label>Porcentaje (%)<input type="number" min="0" step="0.01" value={rate} onChange={event => setRate(event.target.value)}/></label><label>Fórmula de cálculo<input value={formula} onChange={event => setFormula(event.target.value)}/></label></div></section><section className="panel"><div className="panel-head"><div><h3>Base de cálculo</h3><p>Información acumulada del periodo.</p></div></div><div className="form-grid"><label>IVA acumulado<input type="number" min="0" step="0.01" value={base} onChange={event => setBase(event.target.value)} placeholder="0.00"/></label><label>Retenciones acumuladas<input type="number" min="0" step="0.01" value={retentions} onChange={event => setRetentions(event.target.value)} placeholder="0.00"/></label></div><div className="tax-base-card"><span>Base acumulada disponible</span><strong>${total.toFixed(2)}</strong><small>IVA + Retenciones · cálculo automático</small></div><label className="full-width">Archivo de respaldo (Excel o PDF)<input type="file" accept=".xlsx,.xls,.pdf" onChange={event => setFile(event.target.files?.[0] || null)}/>{file && <small className="input-hint">{file.name}</small>}</label></section></div><div className="modal-actions"><button type="button" className="outline" onClick={onClose}>Cancelar</button><button type="submit" className="primary"><Icon name="check" size={16}/> Guardar configuración</button></div></form></div>;
-}
-
 function isValidEcuadorCedula(value) {
   if (!/^\d{10}$/.test(value)) return false;
   const province = Number(value.slice(0, 2));
@@ -4068,10 +3722,7 @@ function isValidEcuadorRuc(value) {
     return Number(value[8]) === (11 - (sum % 11)) % 11;
   }
   if (typeDigit === 9) {
-    if (!value.endsWith('001')) return false;
-    const sum = [4, 3, 2, 7, 6, 5, 4, 3, 2].reduce((total, weight, index) => total + Number(value[index]) * weight, 0);
-    const check = 11 - (sum % 11);
-    return Number(value[9]) === (check === 10 || check === 11 ? 0 : check);
+    return value.endsWith('001');
   }
   return typeDigit <= 5 && isValidEcuadorCedula(value.slice(0, 10)) && value.endsWith('001');
 }
@@ -4143,18 +3794,10 @@ function ClientModal({ onClose, onSave, clientToEdit, clients = [], isAdmin = fa
     event.preventDefault();
     if (validationError) return setError(validationError);
     const normalized = { ...form, ruc: form.ruc.trim(), name: form.name.trim(), owner: form.owner.trim(), email: form.email.trim().toLowerCase(), phone: form.phone.trim() };
-    const duplicate = clients.find(item => String(item.id) !== String(clientToEdit?.id || '') && (
-      String(item.ruc || '').trim() === normalized.ruc ||
-      String(item.email || '').trim().toLowerCase() === normalized.email ||
-      String(item.phone || '').trim() === normalized.phone
-    ));
+    const duplicate = clients.find(item => String(item.id) !== String(clientToEdit?.id || '')
+      && String(item.ruc || '').trim() === normalized.ruc);
     if (duplicate) {
-      const duplicateMessage = String(duplicate.ruc || '').trim() === normalized.ruc
-        ? 'El RUC o número de identificación ya está registrado.'
-        : String(duplicate.email || '').trim().toLowerCase() === normalized.email
-          ? 'El correo electrónico ya está registrado.'
-          : 'El número de teléfono ya está registrado.';
-      return setError(duplicateMessage);
+      return setError('El RUC o número de identificación ya está registrado.');
     }
     setSaving(true);
     if (false && isAdmin && !clientToEdit && !form.assignedUserCode) return setError('Selecciona el contador responsable del cliente.');

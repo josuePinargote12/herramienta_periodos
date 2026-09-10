@@ -15,9 +15,23 @@ function parsePortfolioDocument(uploaded: Express.Multer.File) {
 
 export async function previewPortfolio(req: Request, res: Response) {
   const uploaded = file(req);
-  if (!uploaded) return res.status(400).json({ ok: false, error: 'Debes adjuntar un archivo Excel' });
+  if (!uploaded) return res.status(400).json({ ok: false, error: 'Debes adjuntar un archivo Excel o PDF' });
   try {
-    const parsed = await parsePortfolioDocument(uploaded);
+    let manualValues: Record<string, unknown> = {};
+    try { manualValues = JSON.parse(String(req.body?.manualValues || '{}')); } catch { manualValues = {}; }
+    let parsed;
+    try {
+      parsed = await parsePortfolioDocument(uploaded);
+    } catch (error) {
+      const totalAmount = Number(manualValues.totalAmount);
+      const pendingAmount = Number(manualValues.pendingAmount);
+      if (!Number.isFinite(totalAmount) || totalAmount < 0 || !Number.isFinite(pendingAmount) || pendingAmount < 0) throw error;
+      parsed = {
+        rows: [{ sourceRowNumber: 0, transactionDate: null, thirdPartyIdentification: null, thirdPartyName: 'Carga manual', documentType: null, documentNumber: null, description: 'Valor ingresado manualmente', subtotal: totalAmount, taxAmount: 0, retentionAmount: 0, totalAmount, paidAmount: Math.max(totalAmount - pendingAmount, 0), pendingAmount, paymentStatus: pendingAmount <= 0 ? 'paid' : 'pending', validationStatus: 'valid', validationMessage: null, rawData: { manual: true } }],
+        errors: [],
+        totals: { subtotal: totalAmount, taxAmount: 0, retentionAmount: 0, totalAmount, pendingAmount }
+      };
+    }
     return res.json({ ok: true, data: { sheetName: parsed.sheetName, headerRow: parsed.headerRow, columns: parsed.columns, totalRows: parsed.rows.length, errors: parsed.errors, totals: parsed.totals } });
   } finally { if (fs.existsSync(uploaded.path)) fs.unlinkSync(uploaded.path); }
 }
@@ -26,7 +40,7 @@ export async function importPortfolio(req: Request, res: Response) {
   const uploaded = file(req);
   const periodId = String(req.params.id);
   const accountType = String(req.body?.accountType || '').toUpperCase();
-  if (!uploaded) return res.status(400).json({ ok: false, error: 'Debes adjuntar un archivo Excel' });
+  if (!uploaded) return res.status(400).json({ ok: false, error: 'Debes adjuntar un archivo Excel o PDF' });
   if (!['CXC', 'CXP'].includes(accountType)) return res.status(400).json({ ok: false, error: 'El tipo debe ser CXC o CXP' });
   let documentStored = false;
   try {

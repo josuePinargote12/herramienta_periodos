@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import multer from 'multer';
 import { testDatabaseConnection } from './config/database.js';
 import ssoRoutes from './routes/sso.routes.js';
 import authRoutes from './routes/auth.routes.js';
@@ -18,7 +19,7 @@ import dashboardRoutes from './routes/dashboard.routes.js';
 import annualTaxRoutes from './routes/annualTax.routes.js';
 import auditRoutes from './routes/audit.routes.js';
 import portfolioRoutes from './routes/portfolio.routes.js';
-import { downloadCombinedPdf } from './controllers/combinedShare.controller.js';
+import { downloadCombinedPdf, downloadPublicDocument } from './controllers/combinedShare.controller.js';
 
 // Instancia de Express que recibe y dirige las peticiones HTTP.
 const app = express();
@@ -53,6 +54,7 @@ app.get('/api/health/database', async (_req: Request, res: Response) => {
   }
 });
 app.get('/api/public/share-pdf', downloadCombinedPdf);
+app.get('/api/public/document-download', downloadPublicDocument);
 // Monta las rutas SSO bajo el prefijo /api/sso.
 app.use('/api/sso', ssoRoutes);
 // Monta el login bajo el prefijo /api/auth.
@@ -69,6 +71,10 @@ app.use('/api', requireAuth, annualTaxRoutes);
 // Registra el detalle internamente, pero devuelve un mensaje genérico al cliente.
 app.use((error: unknown, _req: Request, res: Response, _next: unknown) => {
   console.error('[api] unhandled error:', error);
+  if (error instanceof multer.MulterError) {
+    const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    return res.status(status).json({ ok: false, error: status === 413 ? 'El archivo supera el tamaño máximo permitido' : 'La carga de archivos no es válida' });
+  }
   res.status(500).json({ ok: false, error: 'Ocurrió un error interno' });
 });
 

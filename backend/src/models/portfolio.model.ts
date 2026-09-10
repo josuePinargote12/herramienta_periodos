@@ -35,6 +35,29 @@ export async function findByPeriod(periodId: string) {
   return rows;
 }
 
+export async function findMovementsByPeriod(periodId: string) {
+  const [rows]: any = await pool.execute(`SELECT m.id, l.account_type AS accountType,
+    m.transaction_date AS transactionDate,
+    m.third_party_identification AS thirdPartyIdentification,
+    m.third_party_name AS thirdPartyName,
+    m.document_type AS documentType,
+    m.document_number AS documentNumber,
+    m.description,
+    m.total_amount AS totalAmount,
+    m.pending_amount AS pendingAmount
+    FROM cxc_cxp_movimientos m
+    INNER JOIN cxc_cxp_cargas l ON l.id = m.carga_id
+    WHERE l.period_id = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM cxc_cxp_cargas newer
+        WHERE newer.period_id = l.period_id
+          AND newer.account_type = l.account_type
+          AND (newer.created_at > l.created_at OR (newer.created_at = l.created_at AND newer.id > l.id))
+      )
+    ORDER BY m.id ASC`, [periodId]);
+  return rows;
+}
+
 export async function summaryByClientYear(clientId: string, fiscalYear: string) {
   const [rows]: any = await pool.execute(`SELECT l.account_type AS accountType, p.fiscal_month AS fiscalMonth,
     0 AS subtotal, 0 AS taxAmount, 0 AS retentionAmount,

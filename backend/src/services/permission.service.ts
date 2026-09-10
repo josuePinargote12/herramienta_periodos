@@ -17,7 +17,7 @@ export function normalizeRole(sourceRole: string | null | undefined): AppRole | 
 // Consulta en la base si el rol tiene habilitada una acción concreta.
 // El userCode queda disponible para futuras reglas por usuario específico;
 // el alcance por cliente se valida adicionalmente en los modelos SQL.
-export async function hasPermission(userCode: number, permission: string, role?: AppRole | null) {
+export async function hasPermission(_userCode: number, permission: string, role?: AppRole | null) {
   if (!role) return false;
   const [rows]: any = await pool.execute(`
     SELECT 1

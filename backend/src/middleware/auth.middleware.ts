@@ -1,4 +1,9 @@
 // Middleware de seguridad: valida el token antes de permitir que llegue al controller.
+/**
+ * Autenticación de las rutas privadas.
+ * Lee el JWT enviado por header o cookie, comprueba su firma y vuelve a
+ * consultar al usuario para aplicar inmediatamente cambios de rol o estado.
+ */
 import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { findUserById } from '../models/user.model.js';
@@ -22,12 +27,15 @@ declare global {
 }
 
 function jwtSecret() {
+  // El servidor no debe iniciar una validación JWT con una clave vacía.
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error('JWT_SECRET no está configurada');
   return secret;
 }
 
 function readCookie(req: Request, name: string) {
+  // Express normalmente expone req.cookies; el segundo camino permite leer la
+  // cookie incluso cuando cookie-parser todavía no la procesó.
   if (req.cookies?.[name]) return String(req.cookies[name]);
   const value = req.headers.cookie?.split(';').find(item => item.trim().startsWith(`${name}=`));
   return value ? decodeURIComponent(value.trim().slice(name.length + 1)) : '';
@@ -38,6 +46,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   // Las vistas y respuestas privadas no deben recuperarse desde la caché.
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.setHeader('Pragma', 'no-cache');
+  // Se prioriza Bearer, pero también se acepta la cookie usada por el frontend.
   const authorization = req.get('authorization') || '';
   const [scheme, token] = authorization.split(' ');
   const cookieToken = readCookie(req, 'accessToken');
@@ -48,6 +57,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 
   try {
+    // verify comprueba firma y expiración antes de permitir el acceso.
     const decoded = jwt.verify(accessToken, jwtSecret()) as Partial<AuthenticatedUser>;
     if (!decoded.codigo || !decoded.ID || !decoded.nombre) {
       return res.status(401).json({ ok: false, error: 'Token de acceso inválido' });

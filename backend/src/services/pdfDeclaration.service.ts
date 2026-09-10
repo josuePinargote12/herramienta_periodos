@@ -53,6 +53,23 @@ function valueForCodes(text: string, codes: number[]) {
   return null;
 }
 
+const spanishMonths = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
+
+function declarationMetadata(text: string) {
+  const normalized = text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+  const identification = normalized.match(/IDENTIFICACION\s*:?\s*(\d{10,13})/)?.[1] || null;
+  const period = normalized.match(new RegExp(`PERIODO\\s+FISCAL\\s*:?\\s*(${spanishMonths.join('|')})\\s+(20\\d{2})`));
+  return {
+    identification,
+    fiscalMonth: period ? spanishMonths.indexOf(period[1]) + 1 : null,
+    fiscalYear: period ? Number(period[2]) : null
+  };
+}
+
 function valuesForAllCodes(text: string) {
   const values: Record<string, number> = {};
   const after = [...text.matchAll(/(?:^|\s)(\d{3})(?:\s+)([0-9][0-9.,]*)/gm)];
@@ -83,6 +100,8 @@ function labelsForCodes(text: string) {
 function detailGroups(text: string) {
   const lines = text.split(/\r?\n/);
   const knownLabels: Record<string, string> = {
+    '409': 'TOTAL VENTAS Y OTRAS OPERACIONES',
+    '509': 'TOTAL ADQUISICIONES Y PAGOS',
     '309': 'Publicidad y comunicación'
   };
   return lines.flatMap((line) => {
@@ -181,6 +200,7 @@ export async function parseIvaDeclaration(filePath: string) {
     labels,
     detailRows: Object.entries(details).map(([code, value]) => ({ code, value, label: labels[code] || 'Casillero del formulario' })),
     detailGroups: groups,
+    metadata: declarationMetadata(text),
     declarationType: 'IVA'
   };
 }
@@ -207,6 +227,7 @@ export async function parseRetentionDeclaration(filePath: string) {
     labels,
     detailRows: Object.entries(details).map(([code, value]) => ({ code, value, label: labels[code] || 'Casillero del formulario' })),
     detailGroups: groups,
+    metadata: declarationMetadata(text),
     declarationType: 'RETENCIONES'
   };
 }

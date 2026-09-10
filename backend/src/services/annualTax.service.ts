@@ -18,7 +18,7 @@ const RIMPE_TABLE = [[20000, 50000, 60, 1], [50000, 75000, 360, 1.25], [75000, 1
 
 function calculateNaturalTax(base: number) {
   base = Math.max(0, base);
-  const row = NATURAL_TABLE_2026.find((item, index) => base >= item[0] && base < item[1]) || NATURAL_TABLE_2026[NATURAL_TABLE_2026.length - 1];
+  const row = NATURAL_TABLE_2026.find(item => base >= item[0] && base < item[1]) || NATURAL_TABLE_2026[NATURAL_TABLE_2026.length - 1];
   return Number((row[2] + Math.max(0, base - row[0]) * row[3] / 100).toFixed(2));
 }
 
@@ -36,19 +36,20 @@ export function calculateIncomeTax(configuration: any, base: any) {
   const isRimpe = regime.includes('rimpe');
   const sales = Number(base.sales || 0);
   const utility = Number(base.utility ?? base.total ?? 0);
+  const taxableUtility = Math.max(0, utility);
   if (isRimpe && sales > 300000) {
-    const tax = isNatural ? calculateNaturalTax(utility) : Number(Math.max(0, utility * 25 / 100).toFixed(2));
-    return { tax, taxBase: utility, basis: 'Utilidad acumulada', rule: isNatural ? 'Régimen General · tabla progresiva' : 'Régimen General · tarifa 25%', warning: 'Las ventas superan $300.000; se aplica Régimen General.' };
+    const tax = isNatural ? calculateNaturalTax(taxableUtility) : Number((taxableUtility * 25 / 100).toFixed(2));
+    return { tax, taxBase: taxableUtility, basis: 'Utilidad acumulada', rule: isNatural ? 'Régimen General · tabla progresiva' : 'Régimen General · tarifa 25%', warning: 'Las ventas superan $300.000; se aplica Régimen General.' };
   }
   if (isPopular) return { tax: 60, taxBase: sales, basis: 'Cuota fija RIMPE Negocio Popular', rule: 'Cuota fija anual · $60' };
   if (isRimpe) {
     const tax = calculateRimpeTax(sales);
     return tax == null
-      ? { tax: isNatural ? calculateNaturalTax(utility) : Number((utility * 25 / 100).toFixed(2)), taxBase: utility, basis: 'Utilidad acumulada', rule: 'Régimen General por superar límites', warning: 'Las ventas no están dentro de los rangos RIMPE.' }
+      ? { tax: isNatural ? calculateNaturalTax(taxableUtility) : Number((taxableUtility * 25 / 100).toFixed(2)), taxBase: taxableUtility, basis: 'Utilidad acumulada', rule: 'Régimen General por superar límites', warning: 'Las ventas no están dentro de los rangos RIMPE.' }
       : { tax, taxBase: sales, basis: 'Ventas acumuladas', rule: 'Tabla progresiva RIMPE Emprendedor' };
   }
-  if (!isNatural) return { tax: Number((utility * 25 / 100).toFixed(2)), taxBase: utility, basis: 'Utilidad acumulada', rule: 'Sociedad · tarifa plana 25%' };
-  return { tax: calculateNaturalTax(Math.max(0, utility)), taxBase: Math.max(0, utility), basis: 'Utilidad acumulada menos gastos personales', rule: 'Régimen General · tabla progresiva 2026' };
+  if (!isNatural) return { tax: Number((taxableUtility * 25 / 100).toFixed(2)), taxBase: taxableUtility, basis: 'Utilidad acumulada', rule: 'Sociedad · tarifa plana 25%' };
+  return { tax: calculateNaturalTax(taxableUtility), taxBase: taxableUtility, basis: 'Utilidad acumulada menos gastos personales', rule: 'Régimen General · tabla progresiva 2026' };
 }
 
 const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -65,41 +66,41 @@ export async function getAnnualDetail(clientId: string, fiscalYear: string, user
   let accumulatedCosts = 0;
   let accumulatedUtility = 0;
   let accumulatedRetentions = 0;
-  const months = monthNames.map((name, index) => {
-    const month = index + 1;
+  const months = monthNames.map((name, _index) => {
+    const month = monthNames.indexOf(name) + 1;
     const row = byMonth.get(month) || {};
     const sales = Number(row.ivaCosts || 0);
     const employeeExpense = Number(row.employeeExpense || 0);
-    const costs = Number((Number(row.ivaValues || 0) + employeeExpense).toFixed(2));
-    const utility = Number(Number(row.utility ?? (sales - costs)).toFixed(2));
+    const costs = Number(Number(row.ivaValues || 0).toFixed(2));
+    const utility = Number((sales - costs - employeeExpense).toFixed(2));
     accumulatedSales += sales;
     accumulatedCosts += costs;
     accumulatedUtility = Number((accumulatedUtility + utility).toFixed(2));
     accumulatedRetentions += Number(row.retentions || 0);
     const calculation = calculateIncomeTax(configuration, { sales: accumulatedSales, costs: accumulatedCosts, utility: accumulatedUtility, retentions: accumulatedRetentions });
-    // El importe mensual es la variación del impuesto acumulado. Puede ser
-    // negativo cuando una pérdida reduce la base imponible acumulada.
+    // El importe mensual es la variación del impuesto acumulado. Una pérdida
+    // puede reducir la base, pero nunca genera un impuesto negativo.
     const tax = Number(Math.max(0, calculation.tax - previousTax).toFixed(2));
     previousTax = calculation.tax;
     const incomeTaxRetention = Number(row.incomeTaxRetention || 0);
     return { periodId: row.periodId, month, name, iva: Number(row.iva || 0), retentions: Number(row.retentions || 0), incomeTaxRetention, employeeExpense, sales, costs, utility, accumulatedBase: accumulatedUtility, rate: calculation.rule, tax, taxAfterRetentions: Number((tax - incomeTaxRetention).toFixed(2)), taxBase: calculation.taxBase, warning: calculation.warning || null };
   });
-  const monthlyTotals = declarations.reduce((total, row) => ({
+  const monthlyTotals = months.reduce((total, row) => ({
     iva: total.iva + Number(row.iva || 0),
     retentions: total.retentions + Number(row.retentions || 0),
-    base: total.base + Number(row.utility ?? (Number(row.ivaCosts || 0) - Number(row.ivaValues || 0) - Number(row.employeeExpense || 0))),
+    base: Number((total.base + Number(row.utility || 0)).toFixed(2)),
     employeeExpense: total.employeeExpense + Number(row.employeeExpense || 0),
     incomeTaxRetention: total.incomeTaxRetention + Number(row.incomeTaxRetention || 0)
   }), { iva: 0, retentions: 0, base: 0, employeeExpense: 0, incomeTaxRetention: 0 });
   const hasAnnualValues = Boolean(annualDeclaration && !['acumulando', 'accumulating'].includes(String(annualDeclaration.status || '').toLowerCase()) && [annualDeclaration.ivaAccumulated, annualDeclaration.retentionsAccumulated, annualDeclaration.accumulatedBase, annualDeclaration.calculatedTax].some(value => Number(value || 0) !== 0));
-  const registeredMonths = months.filter(row => [row.sales, row.costs, row.utility, row.iva, row.retentions].some(value => Number(value || 0) !== 0));
+  const registeredMonths = months.filter(row => [row.sales, row.costs, row.employeeExpense, row.utility, row.iva, row.retentions, row.incomeTaxRetention].some(value => Number(value || 0) !== 0));
   const finalCalculation = calculateIncomeTax(configuration, { sales: accumulatedSales, costs: accumulatedCosts, utility: accumulatedUtility, retentions: accumulatedRetentions });
   const annualTax = accumulatedUtility <= 0
     ? 0
     : hasAnnualValues ? Number(annualDeclaration.calculatedTax || 0) : Number(finalCalculation.tax || 0);
   const annualTaxPayable = accumulatedUtility <= 0
     ? 0
-    : Number((annualTax - monthlyTotals.incomeTaxRetention).toFixed(2));
+    : Number(Math.max(0, annualTax - monthlyTotals.incomeTaxRetention).toFixed(2));
   return {
     client: { name: String(client.name || ''), ruc: String(client.ruc || '') },
     configuration,
@@ -185,7 +186,7 @@ export async function getAnnualSummary(clientId: string, fiscalYear: string, use
     ? await annualTaxModel.getMonthlyBase(clientId, fiscalYear, maxMonth, userCode)
     : await annualTaxModel.getAccumulatedBase(clientId, fiscalYear, userCode, maxMonth);
   const calculation = calculateIncomeTax(configuration, base);
-  const taxPayable = Number((Number(calculation.tax || 0) - Number(base.retentions || 0)).toFixed(2));
+  const taxPayable = Number(Math.max(0, Number(calculation.tax || 0) - Number(base.retentions || 0)).toFixed(2));
   return { declaration, configuration, base, accumulatedBase: base.total, calculation: { ...calculation, taxPayable } };
 }
 

@@ -11,7 +11,7 @@ const statusFromDb: Record<string, string> = {
 
 export type PeriodFrequency = 'Mensual';
 
-function normalizeFrequency(value?: string): PeriodFrequency {
+function normalizeFrequency(_value?: string): PeriodFrequency {
   return 'Mensual';
 }
 
@@ -41,7 +41,7 @@ export async function saveFrequency(clientId: string, fiscalYear: number, freque
 }
 
 export async function createForClient(clientId: string, fiscalYear = new Date().getFullYear(), frequency?: string) {
-  const normalized = await saveFrequency(clientId, fiscalYear, frequency || await getFrequency(clientId, fiscalYear));
+  await saveFrequency(clientId, fiscalYear, frequency || await getFrequency(clientId, fiscalYear));
   const months = Array.from({ length: 12 }, (_, index) => index + 1);
   const values = months.flatMap(month => [clientId, fiscalYear, month]);
   await pool.execute(`INSERT IGNORE INTO accounting_periods (client_id, fiscal_year, fiscal_month)

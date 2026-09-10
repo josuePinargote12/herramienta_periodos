@@ -1,12 +1,51 @@
 import type { Request, Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pool } from '../config/database.js';
 import * as documentModel from '../models/document.model.js';
 import * as declarationModel from '../models/declaration.model.js';
 import { parseIvaDeclaration, parseRetentionDeclaration } from '../services/pdfDeclaration.service.js';
+import { parseFinancialStatement, type FinancialStatementType } from '../services/financialStatement.service.js';
 
 async function ownsPeriod(periodId: string, userCode: number, role: any) {
   return documentModel.ownsPeriod(periodId, userCode, role);
+}
+
+async function getDeclarationPeriod(periodId: string, userCode: number, role: any) {
+  const ownerFilter = role === 'ADMIN' ? '' : ' AND c.COD_USUEMP = ?';
+  const params = role === 'ADMIN' ? [periodId] : [periodId, userCode];
+  const [rows]: any = await pool.execute(`
+    SELECT p.fiscal_year AS fiscalYear, p.fiscal_month AS fiscalMonth,
+      c.ruc_cedula AS identification
+    FROM accounting_periods p
+    INNER JOIN clientes c ON c.id = p.client_id
+    WHERE p.id = ?${ownerFilter}
+    LIMIT 1`, params);
+  return rows[0] || null;
+}
+
+function validateDeclarationMetadata(type: 'iva' | 'retentions', metadata: any, period: any) {
+  const expectedDocument = type === 'iva' ? 'Declaración de IVA' : 'Declaración de retenciones';
+  if (!metadata?.identification || !metadata?.fiscalMonth || !metadata?.fiscalYear) {
+    throw new Error(`No se pudo leer RUC, mes y año del documento de ${expectedDocument}.`);
+  }
+  const expectedIdentification = String(period.identification || '').replace(/\D/g, '');
+  const documentIdentification = String(metadata.identification).replace(/\D/g, '');
+  if (documentIdentification !== expectedIdentification) {
+    throw new Error('RUC incorrecto. Ingrese los datos correctos del cliente seleccionado.');
+  }
+  if (Number(metadata.fiscalMonth) !== Number(period.fiscalMonth) || Number(metadata.fiscalYear) !== Number(period.fiscalYear)) {
+    throw new Error('Período incorrecto. Ingrese el documento correspondiente al período seleccionado.');
+  }
+}
+
+export async function parseFinancialStatementFile(req: Request, res: Response) {
+  const file = req.file;
+  const type = req.query.type === 'results' ? 'results' : 'balance';
+  if (!file) return res.status(400).json({ ok: false, error: 'Debes adjuntar un archivo Excel o PDF' });
+  try { return res.json({ ok: true, data: await parseFinancialStatement(file.path, type as FinancialStatementType, file.mimetype) }); }
+  catch (error) { return res.status(422).json({ ok: false, error: error instanceof Error ? error.message : 'No se pudo leer el estado financiero' }); }
+  finally { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); }
 }
 
 export async function getDeclaration(req: Request, res: Response) {
@@ -56,9 +95,12 @@ export async function parseDeclarationPdf(req: Request, res: Response) {
   }
 }
 
+
 export async function saveDeclaration(req: Request, res: Response) {
   const periodId = String(req.params.id);
   if (!await ownsPeriod(periodId, req.user!.codigo, req.user!.role)) return res.status(404).json({ ok: false, error: 'Periodo no encontrado' });
+  const period = await getDeclarationPeriod(periodId, req.user!.codigo, req.user!.role);
+  if (!period) return res.status(404).json({ ok: false, error: 'Periodo no encontrado' });
   const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
   const ivaFile = files?.ivaFile?.[0];
   const retentionFile = files?.retentionFile?.[0];
@@ -76,18 +118,11 @@ export async function saveDeclaration(req: Request, res: Response) {
   if (ivaFile) {
     try {
       const parsed = await parseIvaDeclaration(ivaFile.path);
+      validateDeclarationMetadata('iva', parsed.metadata, period);
       iva = parsed.iva;
       ivaCosts = parsed.costs;
       ivaValues = parsed.values;
       ivaDetails = parsed.details;
-      const groups = parsed.detailGroups
-        .filter(group => group.fields.some(field => Number(field.value) > 0))
-        .filter(group => Number(group.fields[0]?.code) < 480 || Number(group.fields[0]?.code) >= 500);
-      const expenseTotalIndex = groups.findIndex(group => /^TOTAL ADQUISICIONES Y PAGOS$/i.test(group.label.trim()));
-      const displayGroups = groups
-        .filter((group, index) => Number(group.fields[0]?.code) < 500 || expenseTotalIndex < 0 || index <= expenseTotalIndex)
-        .map(group => ({ ...group, fields: group.fields.filter(field => Number(field.value) > 0) }))
-        .filter(group => group.fields.length);
       // Se conserva el detalle completo para poder revisarlo por mes desde el historial.
       // La vista de resumen aplica sus propios filtros de valores y secciones.
       ivaDetailRows = parsed.detailGroups;
@@ -98,6 +133,7 @@ export async function saveDeclaration(req: Request, res: Response) {
   if (retentionFile) {
     try {
       const parsed = await parseRetentionDeclaration(retentionFile.path);
+      validateDeclarationMetadata('retentions', parsed.metadata, period);
       retentions = parsed.retentions;
       retentionDetails = parsed.details;
       retentionDetailRows = parsed.detailGroups;

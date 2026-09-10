@@ -100,7 +100,6 @@ export async function loginController(req: Request, res: Response) {
     const session = await login(username, password);
     setAuthCookies(res, session.accessToken, session.refreshToken);
     // La preautenticación solo se elimina al alcanzar tres errores.
-    const maxAttemptsReached = Boolean(preauthUser && preauthUser.attempts >= 3);
     if (preauthUser && preauth) {
       await deletePreauth(preauth);
       clearPreauthCookie(res);

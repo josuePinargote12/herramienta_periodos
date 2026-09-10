@@ -2250,6 +2250,14 @@ nav button.active{box-shadow:inset 3px 0 #a6a6ff}
   border-color: #c0392b;
 }
 
+.workflow-message-backdrop{position:fixed;inset:0;z-index:2000;display:grid;place-items:center;padding:18px;background:rgba(15,23,42,.52);backdrop-filter:blur(2px)}
+.workflow-message-modal{width:min(440px,calc(100vw - 32px));display:grid;grid-template-columns:44px 1fr;gap:12px;align-items:start;box-sizing:border-box;padding:22px;border:1px solid #d8deea;border-radius:14px;background:#fff;box-shadow:0 20px 55px rgba(15,23,42,.28);color:#1f2937}
+.workflow-message-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#fff3cd;border:1px solid #e5b84b;color:#9a6700;font-size:22px;font-weight:800}
+.workflow-message-content h3{margin:1px 0 7px;color:#252566;font-size:17px}
+.workflow-message-content p{margin:0;color:#526277;font-size:13px;line-height:1.5}
+.workflow-message-button{grid-column:2;justify-self:end;border:1px solid #252566;border-radius:8px;padding:9px 22px;background:#252566;color:#fff;font-weight:700;cursor:pointer}
+.workflow-message-button:hover{background:#332f83;border-color:#332f83}
+
 .history-btn { color: #4338a8; border: 1px solid #cfc9ff; background: #f8f7ff; }
 .client-history-list { display: grid; gap: 8px; max-height: 55vh; overflow: auto; }
 .client-history-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid #e1e4ef; border-radius: 8px; }
@@ -2345,3 +2353,8 @@ nav button.active{box-shadow:inset 3px 0 #a6a6ff}
 .share-comment-modal h3{margin:0 0 8px;color:#252566;font-size:17px}.share-comment-modal p{margin:0 0 13px;color:#6b7280;font-size:12px}
 .share-comment-modal textarea{display:block;width:100%;min-height:110px;box-sizing:border-box;padding:11px;border:1px solid #cfd6e6;border-radius:8px;outline:none;resize:vertical;font:inherit;font-size:13px;color:#1f2937}.share-comment-modal textarea:focus{border-color:#6b61c9;box-shadow:0 0 0 3px rgba(107,97,201,.12)}
 .share-comment-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:14px}.share-comment-actions button{border:1px solid #cfd6e6;border-radius:7px;padding:9px 16px;background:#fff;color:#4b5563;font-weight:700;cursor:pointer}.share-comment-actions button[data-share-confirm]{border-color:#252566;background:#252566;color:#fff}.share-comment-actions button:hover{filter:brightness(.96)}
+.financial-read-results{display:grid;gap:4px;margin-top:8px;padding:8px;border:1px solid #dbe3ef;border-radius:7px;background:#f7f9fc}.financial-read-results span{display:flex;justify-content:space-between;gap:8px;color:#526277;font-size:10px}.financial-read-results small{text-transform:capitalize}.financial-read-results strong{color:#252566;font-size:10px}
+.financial-read-results,.portfolio-read-results{display:none!important}
+.financial-manual-field{display:flex!important;flex-direction:row!important;align-items:center;justify-content:space-between;gap:8px;font-size:10px!important;color:#526277!important}.financial-manual-field input{width:110px!important;padding:4px 6px!important;font-size:10px!important}
+.portfolio-manual-field{display:flex!important;align-items:center;justify-content:space-between;gap:8px;font-size:10px!important;color:#526277!important}.portfolio-manual-field input{width:110px!important;padding:4px 6px!important;font-size:10px!important}
+.clients-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 4px 0;color:#68708a;font-size:11px}.clients-pagination-actions{display:flex;align-items:center;gap:10px}.clients-pagination button{padding:7px 11px;font-size:11px}.clients-pagination button:disabled{opacity:.5;cursor:not-allowed;transform:none!important;box-shadow:none!important}

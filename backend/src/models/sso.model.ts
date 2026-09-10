@@ -5,7 +5,7 @@ import { pool } from '../config/database.js';
 const sha256 = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
 // Consume un ticket una sola vez y crea la preautenticación asociada.
-export async function consumeTicket(ticket: string, ip: string | null, userAgent: string) {
+export async function consumeTicket(ticket: string, _ip: string | null, _userAgent: string) {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();

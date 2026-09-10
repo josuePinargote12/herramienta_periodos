@@ -21,7 +21,7 @@ type ParsedRow = {
 };
 
 const aliases: Record<string, string[]> = {
-  transactionDate: ['fecha', 'fecha emision', 'fecha emisión', 'fecha factura', 'date'],
+  transactionDate: ['fecha', 'fecha emision', 'fecha emisión', 'fecha factura', 'fecha vencimiento', 'fecha de vencimiento', 'vencimiento', 'date'],
   thirdPartyIdentification: ['ruc', 'cedula', 'cédula', 'identificacion', 'identificación', 'ruc proveedor', 'ruc cliente'],
   thirdPartyName: ['cliente', 'proveedor', 'razon social', 'razón social', 'nombre', 'tercero'],
   documentType: ['tipo comprobante', 'tipo documento', 'comprobante', 'document type'],

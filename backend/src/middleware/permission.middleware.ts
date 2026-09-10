@@ -1,7 +1,13 @@
+/**
+ * Autorización basada en roles y permisos.
+ * La autenticación identifica al usuario; este middleware decide si puede
+ * ejecutar una acción concreta.
+ */
 import type { NextFunction, Request, Response } from 'express';
 import { hasPermission, type AppRole } from '../services/permission.service.js';
 
 export function requireRole(role: AppRole) {
+  // Permite únicamente el rol exacto solicitado.
   return (req: Request, res: Response, next: NextFunction) => {
     if (req.user?.role !== role) return res.status(403).json({ ok: false, error: 'Rol no autorizado' });
     return next();
@@ -10,6 +16,7 @@ export function requireRole(role: AppRole) {
 
 // El detalle anual es una vista interna exclusiva de administradores y contadores.
 export function requireAccountingRole() {
+  // Protege reportes internos que solo deben consultar ADMIN o CONTADOR.
   return (req: Request, res: Response, next: NextFunction) => {
     if (!['ADMIN', 'CONTADOR'].includes(String(req.user?.role))) {
       return res.status(403).json({ ok: false, error: 'Solo ADMIN y CONTADOR pueden consultar el detalle anual' });
@@ -20,6 +27,7 @@ export function requireAccountingRole() {
 
 // Protege un endpoint con un permiso almacenado en permisos_contamatic.
 export function requirePermission(permission: string) {
+  // Consulta el permiso individual del usuario en el catálogo de permisos.
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const allowed = await hasPermission(req.user!.codigo, permission, req.user!.role as AppRole);
@@ -33,6 +41,7 @@ export function requirePermission(permission: string) {
 
 // Protege un endpoint cuando basta con tener cualquiera de los permisos indicados.
 export function requireAnyPermission(...permissions: string[]) {
+  // Autoriza cuando el usuario posee al menos uno de los permisos recibidos.
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const allowed = await Promise.all(permissions.map(permission => hasPermission(req.user!.codigo, permission, req.user!.role as AppRole)));

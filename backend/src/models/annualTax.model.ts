@@ -57,7 +57,9 @@ export async function getAccumulatedBase(clientId: string, fiscalYear: string, u
       COALESCE(SUM(dm.retention_amount), 0) AS retentions,
       COALESCE(SUM(dm.iva_costs_amount), 0) AS sales,
       COALESCE(SUM(dm.iva_values_amount), 0) AS costs,
-      COALESCE(SUM(COALESCE(dm.utility_amount, dm.iva_costs_amount - dm.iva_values_amount)), 0) AS utility
+      -- La utilidad se calcula desde sus componentes para no reutilizar un
+      -- valor histórico que ya pudiera incluir el gasto de empleados.
+      COALESCE(SUM(dm.iva_costs_amount - dm.iva_values_amount - COALESCE(dm.employee_expense_amount, 0)), 0) AS utility
     FROM declaraciones_mensuales dm
     INNER JOIN accounting_periods p ON p.id = dm.period_id
     INNER JOIN clientes c ON c.id = p.client_id
@@ -82,7 +84,7 @@ export async function getMonthlyBase(clientId: string, fiscalYear: string, month
       COALESCE(SUM(dm.retention_amount), 0) AS retentions,
       COALESCE(SUM(dm.iva_costs_amount), 0) AS sales,
       COALESCE(SUM(dm.iva_values_amount), 0) AS costs,
-      COALESCE(SUM(COALESCE(dm.utility_amount, dm.iva_costs_amount - dm.iva_values_amount)), 0) AS utility
+      COALESCE(SUM(dm.iva_costs_amount - dm.iva_values_amount - COALESCE(dm.employee_expense_amount, 0)), 0) AS utility
     FROM declaraciones_mensuales dm
     INNER JOIN accounting_periods p ON p.id = dm.period_id
     INNER JOIN clientes c ON c.id = p.client_id

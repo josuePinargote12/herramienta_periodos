@@ -99,3 +99,28 @@ export async function updateIncomeTaxRetention(periodId: string, value: number, 
     WHERE d.period_id = ?${ownerFilter}`, params);
   return findByPeriod(periodId, userCode, role);
 }
+
+export async function upsertFinancialSummary(periodId: string, type: 'balance' | 'results', documentId: number, values: Record<string, number | null>) {
+  const [rows]: any = await pool.execute('SELECT * FROM estados_financieros_resumen WHERE period_id = ? LIMIT 1', [periodId]);
+  const current = rows[0] || {};
+  const balanceSubtotalFields = new Set(['activo_corriente', 'activo_no_corriente', 'pasivo_corriente', 'pasivo_no_corriente']);
+  const merged = { ...current, ...Object.fromEntries(Object.entries(values).filter(([key, value]) => value != null || (type === 'balance' && balanceSubtotalFields.has(key)))) };
+  const documentField = type === 'balance' ? 'balance_document_id' : 'results_document_id';
+  merged[documentField] = documentId;
+  const status = merged.balance_document_id && merged.results_document_id ? 'Completed' : 'Pending';
+  await pool.execute(`INSERT INTO estados_financieros_resumen
+    (period_id, balance_document_id, results_document_id, activo_corriente, activo_no_corriente, total_activos, pasivo_corriente, pasivo_no_corriente, total_pasivos, patrimonio, ingresos_periodo, costos_gastos_operativos, utilidad_antes_participacion_impuestos, extraction_status, extracted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE balance_document_id=VALUES(balance_document_id), results_document_id=VALUES(results_document_id), activo_corriente=VALUES(activo_corriente), activo_no_corriente=VALUES(activo_no_corriente), total_activos=VALUES(total_activos), pasivo_corriente=VALUES(pasivo_corriente), pasivo_no_corriente=VALUES(pasivo_no_corriente), total_pasivos=VALUES(total_pasivos), patrimonio=VALUES(patrimonio), ingresos_periodo=VALUES(ingresos_periodo), costos_gastos_operativos=VALUES(costos_gastos_operativos), utilidad_antes_participacion_impuestos=VALUES(utilidad_antes_participacion_impuestos), extraction_status=VALUES(extraction_status), extracted_at=VALUES(extracted_at)`, [periodId, merged.balance_document_id || null, merged.results_document_id || null, merged.activo_corriente ?? null, merged.activo_no_corriente ?? null, merged.total_activos ?? null, merged.pasivo_corriente ?? null, merged.pasivo_no_corriente ?? null, merged.total_pasivos ?? null, merged.patrimonio ?? null, merged.ingresos_periodo ?? null, merged.costos_gastos_operativos ?? null, merged.utilidad_antes_participacion_impuestos ?? null, status, status === 'Completed' ? new Date() : null]);
+  return findFinancialSummaryByPeriod(periodId);
+}
+
+export async function findFinancialSummaryByPeriod(periodId: string) {
+  const [rows]: any = await pool.execute('SELECT * FROM estados_financieros_resumen WHERE period_id = ? LIMIT 1', [periodId]);
+  return rows[0] || null;
+}
+
+export async function findFinancialSummariesByClientYear(clientId: string, fiscalYear: string) {
+  const [rows]: any = await pool.execute('SELECT e.*, p.fiscal_month AS monthNum FROM estados_financieros_resumen e INNER JOIN accounting_periods p ON p.id=e.period_id WHERE p.client_id=? AND p.fiscal_year=? ORDER BY p.fiscal_month', [clientId, Number(fiscalYear)]);
+  return rows;
+}
