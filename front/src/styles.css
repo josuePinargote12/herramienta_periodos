@@ -39,6 +39,17 @@ padding-bottom:8px
 .client-table td{
 vertical-align:middle
 }
+.clients-registry .client-table td:nth-child(4){
+min-width:150px
+}
+.clients-registry .client-table td:nth-child(4) small{
+display:block;
+line-height:1.25;
+white-space:normal
+}
+.clients-registry .client-table td:nth-child(4) small+small{
+margin-top:4px
+}
 .clients-registry .client-table tbody tr{transition:background .2s ease,box-shadow .2s ease,transform .2s ease}.clients-registry .client-table tbody tr:hover{background:linear-gradient(90deg,#f5f8ff 0%,#fff 72%);box-shadow:inset 4px 0 0 #526ee8,0 5px 14px rgba(58,78,160,.08);transform:translateY(-1px)}.clients-registry .client-table tbody tr:hover td:first-child strong{color:#334fc0}.clients-registry .client-table tbody tr td{transition:color .2s ease}.clients-registry .client-table tbody tr td:first-child strong,.clients-registry .client-table tbody tr td:nth-child(3) strong{transition:color .2s ease}.clients-registry .client-table .badge{transition:transform .2s ease,box-shadow .2s ease}.clients-registry .client-table tbody tr:hover .badge{transform:scale(1.06);box-shadow:0 2px 7px rgba(37,141,102,.16)}.clients-registry .client-actions-trigger{transition:transform .2s ease,background .2s ease,border-color .2s ease,box-shadow .2s ease}.clients-registry .client-actions-trigger:hover{transform:translateY(-2px);box-shadow:0 5px 12px rgba(82,110,232,.2)}
 @media(max-width:720px){
 .client-metrics{

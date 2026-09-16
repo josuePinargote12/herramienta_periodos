@@ -11,6 +11,7 @@ dist/
 .vite-cache-front/
 .cache/
 tmp-main-check/
+tmp/
 front/.codex-build/
 front/.qa-review-build/
 front/.qa-version-build/

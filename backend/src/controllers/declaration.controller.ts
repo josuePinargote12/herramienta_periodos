@@ -26,8 +26,8 @@ async function getDeclarationPeriod(periodId: string, userCode: number, role: an
 
 function validateDeclarationMetadata(type: 'iva' | 'retentions', metadata: any, period: any) {
   const expectedDocument = type === 'iva' ? 'Declaración de IVA' : 'Declaración de retenciones';
-  if (!metadata?.identification || !metadata?.fiscalMonth || !metadata?.fiscalYear) {
-    throw new Error(`No se pudo leer RUC, mes y año del documento de ${expectedDocument}.`);
+  if (!metadata?.identification || !metadata?.fiscalMonth || !metadata?.fiscalYear || !metadata?.periodType) {
+    throw new Error(`No se pudo leer RUC, período y año del documento de ${expectedDocument}.`);
   }
   const expectedIdentification = String(period.identification || '').replace(/\D/g, '');
   const documentIdentification = String(metadata.identification).replace(/\D/g, '');
@@ -35,7 +35,7 @@ function validateDeclarationMetadata(type: 'iva' | 'retentions', metadata: any, 
     throw new Error('RUC incorrecto. Ingrese los datos correctos del cliente seleccionado.');
   }
   if (Number(metadata.fiscalMonth) !== Number(period.fiscalMonth) || Number(metadata.fiscalYear) !== Number(period.fiscalYear)) {
-    throw new Error('Período incorrecto. Ingrese el documento correspondiente al período seleccionado.');
+    throw new Error('Período incorrecto. El documento debe corresponder al mes de cierre del período seleccionado.');
   }
 }
 

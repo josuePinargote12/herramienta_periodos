@@ -55,6 +55,47 @@ function valueForCodes(text: string, codes: number[]) {
 
 const spanishMonths = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
 
+type DeclarationPeriodType = 'monthly' | 'quarterly' | 'semesterly';
+
+const periodOrdinalPattern = 'PRIMER(?:O)?|SEGUNDO|TERCER(?:O)?|CUARTO|1ER|2DO|3ER|4TO|I{1,3}|IV';
+
+function ordinalNumber(value: string) {
+  const normalized = value.toUpperCase();
+  if (normalized === 'PRIMER' || normalized === 'PRIMERO' || normalized === '1ER' || normalized === 'I') return 1;
+  if (normalized === 'SEGUNDO' || normalized === '2DO' || normalized === 'II') return 2;
+  if (normalized === 'TERCER' || normalized === 'TERCERO' || normalized === '3ER' || normalized === 'III') return 3;
+  if (normalized === 'CUARTO' || normalized === '4TO' || normalized === 'IV') return 4;
+  return null;
+}
+
+function findNumberedPeriod(text: string, periodWord: 'TRIMESTRE' | 'SEMESTRE') {
+  const direct = text.match(new RegExp(`\\b(${periodOrdinalPattern})\\s+${periodWord}\\b(?:\\s+(?:DE|DEL)\\s*)?(20\\d{2})\\b`));
+  if (direct) return { number: ordinalNumber(direct[1]), year: Number(direct[2]) };
+
+  const directWithoutYear = text.match(new RegExp(`\\b(${periodOrdinalPattern})\\s+${periodWord}\\b`));
+  if (directWithoutYear) return { number: ordinalNumber(directWithoutYear[1]), year: null };
+
+  const reversed = text.match(new RegExp(`\\b${periodWord}\\s*:?\\s*(${periodOrdinalPattern})\\b(?:\\s+(?:DE|DEL)\\s*)?(20\\d{2})\\b`));
+  if (reversed) return { number: ordinalNumber(reversed[1]), year: Number(reversed[2]) };
+
+  const reversedWithoutYear = text.match(new RegExp(`\\b${periodWord}\\s*:?\\s*(${periodOrdinalPattern})\\b`));
+  if (reversedWithoutYear) return { number: ordinalNumber(reversedWithoutYear[1]), year: null };
+
+  const numeric = text.match(new RegExp(`\\b${periodWord}\\s*:?\\s*([1-4])\\s*(?:DE|DEL)?\\s*(20\\d{2})\\b`));
+  if (numeric) return { number: Number(numeric[1]), year: Number(numeric[2]) };
+
+  const numericWithoutYear = text.match(new RegExp(`\\b${periodWord}\\s*:?\\s*([1-4])\\b`));
+  if (numericWithoutYear) return { number: Number(numericWithoutYear[1]), year: null };
+
+  return null;
+}
+
+function fiscalYearNearPeriod(text: string) {
+  const periodIndex = text.indexOf('PERIODO FISCAL');
+  const context = periodIndex >= 0 ? text.slice(periodIndex, periodIndex + 180) : '';
+  return Number(context.match(/\b(20\d{2})\b/)?.[1] || 0) || null;
+}
+
 function declarationMetadata(text: string) {
   const normalized = text
     .normalize('NFD')
@@ -63,10 +104,37 @@ function declarationMetadata(text: string) {
     .replace(/\s+/g, ' ');
   const identification = normalized.match(/IDENTIFICACION\s*:?\s*(\d{10,13})/)?.[1] || null;
   const period = normalized.match(new RegExp(`PERIODO\\s+FISCAL\\s*:?\\s*(${spanishMonths.join('|')})\\s+(20\\d{2})`));
+  const quarterly = findNumberedPeriod(normalized, 'TRIMESTRE');
+  const semesterly = findNumberedPeriod(normalized, 'SEMESTRE');
+  const explicitQuarterly = /\bTRIMESTR(?:E|AL)\b/.test(normalized);
+  const explicitSemesterly = /\bSEMESTR(?:E|AL)\b/.test(normalized);
+  const contextualYear = fiscalYearNearPeriod(normalized);
+
+  if (explicitQuarterly) {
+    const fiscalMonth = quarterly?.number ? quarterly.number * 3 : period ? [3, 6, 9, 12][Math.ceil((spanishMonths.indexOf(period[1]) + 1) / 3) - 1] : null;
+    return {
+      identification,
+      fiscalMonth,
+      fiscalYear: quarterly?.year ?? (period ? Number(period[2]) : contextualYear ?? (Number(normalized.match(/\b(20\d{2})\b/)?.[1] || 0) || null)),
+      periodType: 'quarterly' as DeclarationPeriodType
+    };
+  }
+
+  if (explicitSemesterly) {
+    const fiscalMonth = semesterly?.number ? semesterly.number === 1 ? 6 : semesterly.number === 2 ? 12 : null : period && [6, 12].includes(spanishMonths.indexOf(period[1]) + 1) ? spanishMonths.indexOf(period[1]) + 1 : null;
+    return {
+      identification,
+      fiscalMonth,
+      fiscalYear: semesterly?.year ?? (period ? Number(period[2]) : contextualYear ?? (Number(normalized.match(/\b(20\d{2})\b/)?.[1] || 0) || null)),
+      periodType: 'semesterly' as DeclarationPeriodType
+    };
+  }
+
   return {
     identification,
     fiscalMonth: period ? spanishMonths.indexOf(period[1]) + 1 : null,
-    fiscalYear: period ? Number(period[2]) : null
+    fiscalYear: period ? Number(period[2]) : null,
+    periodType: 'monthly' as DeclarationPeriodType
   };
 }
 
@@ -172,7 +240,10 @@ async function extractText(filePath: string) {
 export async function parseIvaDeclaration(filePath: string) {
   if (!fs.existsSync(filePath)) throw new Error('Archivo PDF no encontrado');
   const text = await extractText(filePath);
-  if (!/2011\s+DECLARACION DE IVA/i.test(text)) throw new Error('El PDF no corresponde a una declaración de IVA del SRI');
+  const normalizedHeader = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const isIvaDeclaration = /\b2011\s+DECLARACION\s+DE\s+IVA\b/i.test(normalizedHeader)
+    || /\b20\d{2}\s*-\s*DECLARACION\s+(?:MENSUAL|TRIMESTRAL|SEMESTRAL)\s+IVA\b/i.test(normalizedHeader);
+  if (!isIvaDeclaration) throw new Error('El PDF no corresponde a una declaración de IVA del SRI');
   const details = valuesForAllCodes(text);
   const labels = labelsForCodes(text);
   const groups = normalizeIvaDetailGroups(detailGroups(text));
